@@ -64,3 +64,24 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+
+.DS_Store
+
+# Engine binaries
+/src/weiss
+/src/weiss-*
+
+# Compiler and profiling output
+*.o
+*.profraw
+*.profdata
+/src/pgo/
+
+# Raw experiment output
+/results/**/raw/*
+!/results/**/raw/.gitkeep
+
+# Temporary files
+*.tmp
+*.log
