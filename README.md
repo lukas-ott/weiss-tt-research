@@ -1,62 +1,99 @@
-<div align="center">
+# Concurrent Transposition Tables in Parallel Chess Search
 
-  [![Build][build-badge]][build-link]
-  [![License][license-badge]][license-link]
-  <br>
-  [![Release][release-badge]][release-link]
-  [![Commits][commits-badge]][commits-link]
-  <br>
-  [![OpenBench][openbench-badge]][openbench-link]
-  [![Discord][discord-badge]][discord-link]
-</div>
+A bachelor’s thesis project investigating how transposition-table design affects
+the performance and scalability of a parallel chess engine.
 
-## Weiss
-The name is an homage to [VICE](https://www.youtube.com/watch?v=bGAfaepBco4&list=PLZ1QII7yudbc-Ky058TEaOstZHVbT-2hg) which I used as a base for this project.
+This repository is based on the
+[Weiss chess engine](https://github.com/TerjeKir/weiss) by Terje Kirstihagen.
+Weiss is a UCI-compatible chess engine distributed under the GNU General Public
+License v3.0.
 
-Weiss can be seen competing at [TCEC](https://tcec-chess.com) and [Chess.com](https://www.chess.com/computer-chess-championship).
+## Project status
 
-### UCI settings
+The project is currently in the proof-of-concept phase.
 
-* #### Hash
-  The size of the hash table in MB.
+The objective of the proof of concept is to demonstrate that:
 
-* #### Threads
-  The number of threads to use for searching.
+1. the transposition-table implementation can be replaced without redesigning
+   the engine’s search;
+2. search-thread count and transposition-table memory can be controlled;
+3. engine behavior and performance can be logged reproducibly;
+4. the experimental setup runs on ARM64.
 
-* #### SyzygyPath
-  Path to syzygy tablebase files. Uses [Pyrrhic](https://github.com/AndyGrant/Pyrrhic) library.
+## Research context
 
-* #### MultiPV
-  Output the N best lines when searching. Leave at 1 for best performance.
+A transposition table stores information about positions that have already been
+searched. This allows a chess engine to reuse results when the same position is
+reached through a different sequence of moves.
 
-* #### UCI_Chess960
-  An option handled by your GUI. If true, Weiss will play Chess960.
+In a parallel engine, multiple search threads may access the same table.
+Sharing can reduce duplicated search, but it may also introduce contention,
+cache-coherence traffic, inconsistent concurrent accesses, and destructive
+replacement of useful entries.
 
-* #### NoobBook
-  Allow Weiss to query and play moves suggested by [noobpwnftw's online opening database](https://www.chessdb.cn/queryc_en/).
+The broader thesis will investigate the trade-off between information sharing
+and concurrency overhead.
 
-* #### NoobBookMode
-  Sets the query mode to use (see [dbcn docs](https://www.chessdb.cn/cloudbookc_api_en.html)):
-    - best - chooses randomly from the moves with scores close to the best. Stops if all moves' scores are below a threshold.
-    - all - chooses the move with the highest score (first in the returned list). Only stops if there are no moves with scores.
+## Working research question
 
-* #### NoobBookLimit
-  Limit the use of NoobBook to the first x moves of the game. Only relevant with NoobBook set to true.
+> How do different shared and thread-local transposition-table designs affect
+> search efficiency and scalability in a parallel alpha-beta chess engine?
 
-* #### OnlineSyzygy
-  Allow Weiss to query online 7 piece Syzygy tablebases [hosted by lichess](https://tablebase.lichess.ovh).
+The final research question and experimental variants may be refined after the
+proof of concept.
 
+## Proof-of-concept scope
 
-[build-link]:      https://github.com/TerjeKir/Weiss/actions/workflows/make.yml
-[commits-link]:    https://github.com/TerjeKir/Weiss/commits/master
-[discord-link]:    https://discord.gg/WJJcCPTyBJ
-[license-link]:    https://github.com/TerjeKir/weiss/blob/master/COPYING.txt
-[openbench-link]:  http://chess.grantnet.us/index/
-[release-link]:    https://github.com/TerjeKir/Weiss/releases/latest
+The initial proof of concept compares two simple table organizations:
 
-[build-badge]:     https://img.shields.io/github/actions/workflow/status/TerjeKir/Weiss/make.yml?branch=master&style=for-the-badge&label=Weiss&logo=github
-[commits-badge]:   https://img.shields.io/github/commits-since/TerjeKir/Weiss/latest?style=for-the-badge
-[discord-badge]:   https://img.shields.io/discord/759496923324874762?style=for-the-badge&label=discord&logo=Discord
-[license-badge]:   https://img.shields.io/github/license/TerjeKir/Weiss?style=for-the-badge&label=license&color=success
-[openbench-badge]: https://img.shields.io/website?style=for-the-badge&label=OpenBench&down_color=red&down_message=Offline&up_color=success&up_message=Online&url=http%3A%2F%2Fchess.grantnet.us%2Findex
-[release-badge]:   https://img.shields.io/github/v/release/TerjeKir/Weiss?style=for-the-badge&label=official%20release
+- **Two-way bucketed table:** the original Weiss implementation with two entries
+  per bucket.
+- **Direct-mapped table:** an alternative implementation with one entry per
+  bucket.
+
+This comparison is intended to validate the experimental infrastructure. It is
+not yet a controlled scientific comparison because changing the bucket size
+also changes table capacity and replacement behavior.
+
+### Progress
+
+- [ ] Record the exact upstream baseline
+- [ ] Verify the unmodified ARM64 build
+- [ ] Record a baseline benchmark
+- [ ] Make the TT organization selectable at compile time
+- [ ] Build the original two-way TT
+- [ ] Build the direct-mapped TT
+- [ ] Verify configurable pthread counts
+- [ ] Verify configurable TT memory sizes
+- [ ] Add structured experiment logging
+- [ ] Document the proof-of-concept results
+
+## Upstream baseline
+
+The experimental work is based on:
+
+- Upstream repository: <https://github.com/TerjeKir/weiss>
+- Upstream commit: `<c735b8f3d2ddb0cdf42b135a5fb42e21c01f7a3d>`
+- Local baseline tag: `upstream-baseline-<c735b8f>`
+
+The project intentionally uses a fixed upstream revision so that experiments
+remain reproducible.
+
+## Development platform
+
+The initial proof of concept is developed and tested on:
+
+- Machine: Apple MacBook Air with Apple M2
+- Architecture: ARM64
+- Operating system: macOS `<26.6.2>`
+- Compiler: Apple Clang `<17.0.0 (clang-1700.6.4.2)>`
+
+Large-scale experiments will later be run on an ARM-based university server.
+That server is outside the scope of the initial proof of concept.
+
+## Building the upstream baseline
+
+Install the Xcode Command Line Tools if they are not already available:
+
+```bash
+xcode-select --install
