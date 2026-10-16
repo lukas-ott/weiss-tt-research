@@ -1,0 +1,11 @@
+started_utc: 2026-10-16T13:36:05+00:00
+source_commit: 0d04458a487e27edbc6bcc0c62623c7bccaec96b
+source_status_before_run:
+(clean)
+platform: macOS-26.6.2-arm64-arm-64bit-Mach-O
+machine: arm64
+python: 3.13.2
+runner_command: /Users/lukasott/bachelor_thesis/weiss-tt-research/scripts/run_poc.py
+build_commands: ['make -C src basic BUCKET_SIZE=1 EXE=weiss-direct', 'make -C src basic BUCKET_SIZE=2 EXE=weiss-two-way']
+direct_sha256: 5f0497f196a1a089f782fb7e65f8c945b028e558ea63c28d90fa122a60a26956
+two-way_sha256: 169871a0984d85f8df77bcd1c633feb141687648f1af4ea4e4ca2f2dfeedb611

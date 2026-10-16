@@ -13,6 +13,7 @@
 - Benchmark command: `./src/<executable> bench 12 <threads> 64`
 - Repetitions: 5 per table/thread combination
 - Hash: 64 MB
+- Recorded run source commit: `0d04458a487e27edbc6bcc0c62623c7bccaec96b`
 
 ## Reproducing benchmark runs
 
@@ -26,31 +27,33 @@ python3 scripts/run_poc.py --threads 1 4 --hash-mb 16 64 --repetitions 2
 
 The runner creates a new `results/poc/runs/<timestamp>/` directory containing
 `runs.csv`, `run-info.txt`, build logs, and raw benchmark logs. Each CSV row
-links to its raw log. Raw `.log` files are ignored by Git, so retain or share
-them separately if the exact run output needs to be audited.
+contains the relative path to its raw log. Raw `.log` files are ignored by Git,
+so retain or share them separately if the exact run output needs to be audited.
 
 ## Thread-scaling observations
 
-The table reports arithmetic means over five runs. Time is in milliseconds and
-NPS is the mean of the per-run NPS values printed by the benchmark.
+The table below is calculated from the recorded [40 individual runs](../results/poc/runs/20261016T133602040691Z/runs.csv).
+The [run metadata](../results/poc/runs/20261016T133602040691Z/run-info.txt)
+records the source state, commands, platform, and binary hashes. Values are
+arithmetic means over five runs per row; the time range shows the fastest and
+slowest run. NPS is the mean of the per-run NPS values printed by Weiss.
 
-| Table | Threads | Time (ms) | Nodes | NPS |
-|---|---:|---:|---:|---:|
-| Direct-mapped | 1 | 1203.6 | 3,694,620 | 3,069,794 |
-| Direct-mapped | 2 | 1149.8 | 7,028,384 | 6,113,117 |
-| Direct-mapped | 4 | 1116.0 | 12,561,720 | 11,257,196 |
-| Direct-mapped | 8 | 3367.8 | 23,239,055 | 8,469,607 |
-| Two-way | 1 | 2477.8 | 3,552,237 | 1,433,952 |
-| Two-way | 2 | 1558.2 | 7,005,713 | 4,897,776 |
-| Two-way | 4 | 1144.6 | 12,491,176 | 10,933,995 |
-| Two-way | 8 | 1516.4 | 22,791,003 | 15,041,980 |
+| Table | Threads | Mean time (ms) | Time range (ms) | Mean nodes | Mean NPS |
+|---|---:|---:|---:|---:|---:|
+| Direct-mapped | 1 | 1147.0 | 1137–1160 | 3,694,620 | 3,221,255 |
+| Direct-mapped | 2 | 1088.4 | 1031–1170 | 6,785,923 | 6,239,751 |
+| Direct-mapped | 4 | 1005.6 | 963–1049 | 12,421,642 | 12,352,207 |
+| Direct-mapped | 8 | 1502.4 | 1235–1707 | 25,355,630 | 16,933,356 |
+| Two-way | 1 | 1102.0 | 1086–1137 | 3,552,237 | 3,224,305 |
+| Two-way | 2 | 1118.4 | 1054–1195 | 7,039,885 | 6,294,956 |
+| Two-way | 4 | 1005.4 | 941–1062 | 12,376,131 | 12,312,309 |
+| Two-way | 8 | 1449.2 | 1213–1657 | 24,106,785 | 16,670,811 |
 
-The direct-mapped table was faster in the single-thread sample, while the
-two-way table was faster at eight threads. The direct-mapped eight-thread
-measurements showed substantial timing variation. Parallel runs can also
-produce different node counts because threads concurrently access and replace
-entries in the shared transposition table. These results should therefore be
-treated as an initial proof of concept rather than a controlled performance
+Both layouts completed the benchmark. The timing ranges overlap, especially
+at higher thread counts, so these results do not establish that either layout
+is faster. Parallel runs can also search different node counts because threads
+concurrently access and replace entries in the shared table. This is a proof of
+concept for building and measuring both variants, not a controlled performance
 evaluation.
 
 ## Status

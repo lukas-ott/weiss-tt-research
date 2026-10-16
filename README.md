@@ -76,27 +76,11 @@ commands, and binary hashes. Use `--help` to see smaller test configurations or
 ### Thread-scaling experiment
 
 Both variants were benchmarked five times at depth 12 with a 64 MB
-transposition table and 1, 2, 4, and 8 search threads. The values below are
-arithmetic means across the five runs. `NPS` is the mean of the per-run NPS
-values reported by the engine.
-
-| Table | Threads | Time (ms) | Nodes | NPS |
-|---|---:|---:|---:|---:|
-| Direct-mapped | 1 | 1203.6 | 3,694,620 | 3,069,794 |
-| Direct-mapped | 2 | 1149.8 | 7,028,384 | 6,113,117 |
-| Direct-mapped | 4 | 1116.0 | 12,561,720 | 11,257,196 |
-| Direct-mapped | 8 | 3367.8 | 23,239,055 | 8,469,607 |
-| Two-way | 1 | 2477.8 | 3,552,237 | 1,433,952 |
-| Two-way | 2 | 1558.2 | 7,005,713 | 4,897,776 |
-| Two-way | 4 | 1144.6 | 12,491,176 | 10,933,995 |
-| Two-way | 8 | 1516.4 | 22,791,003 | 15,041,980 |
-
-These measurements are an initial proof-of-concept result, not a controlled
-performance evaluation. In particular, the direct-mapped 8-thread runs had
-large timing variation, and parallel runs can search different node counts
-because threads concurrently replace shared transposition-table entries.
-Repeated runs on an otherwise idle machine, CPU affinity, and more extensive
-sampling are needed for stronger conclusions.
+transposition table and 1, 2, 4, and 8 search threads. See the
+[proof-of-concept results](docs/poc.md#thread-scaling-observations) for the
+summary, [individual runs](results/poc/runs/20261016T133602040691Z/runs.csv),
+and limitations. The observed timing variation does not support a claim that
+either layout is faster.
 
 ### Progress
 
@@ -108,7 +92,7 @@ sampling are needed for stronger conclusions.
 - [x] Build the direct-mapped TT
 - [x] Verify configurable pthread counts
 - [x] Verify configurable TT memory sizes
-- [ ] Add structured experiment logging
+- [x] Add structured experiment logging
 - [x] Document the proof-of-concept results
 
 ## Upstream baseline
