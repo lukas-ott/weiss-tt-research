@@ -20,6 +20,7 @@
 EXE    = weiss
 SRC    = *.c pyrrhic/tbprobe.c tuner/*.c query/*.c noobprobe/*.c onlinesyzygy/*.c
 CC     = gcc
+BUCKET_SIZE ?= 2
 
 # Defines
 POPCNT = -msse3 -mpopcnt
@@ -40,7 +41,7 @@ WARN   = -Wall -Wextra -Wshadow -Werror -Wmissing-declarations -Wno-invalid-feat
 NDEBUG = -DNDEBUG
 
 FLAGS  = $(STD) $(WARN) -O3 -flto=auto
-CFLAGS = $(FLAGS) -march=native $(GIT_HEAD_COMMIT_ID_DEF)
+CFLAGS = $(FLAGS) -march=native $(GIT_HEAD_COMMIT_ID_DEF) -DBUCKET_SIZE=$(BUCKET_SIZE)
 RFLAGS = $(FLAGS) -static
 
 # Use pext if supported and not a ryzen 1/2 cpu

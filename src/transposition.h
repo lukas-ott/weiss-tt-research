@@ -28,7 +28,13 @@
 #define HASH_MAX ((int)(pow(2, 40) * sizeof(TTBucket) / (1024 * 1024))) // 40 could be set as high as 64
 #define HASH_DEFAULT 32
 
+#ifndef BUCKET_SIZE
 #define BUCKET_SIZE 2
+#endif
+
+#if BUCKET_SIZE != 1 && BUCKET_SIZE != 2
+#error "BUCKET_SIZE must be 1 or 2"
+#endif
 
 #define ValidBound(bound) (bound >= BOUND_UPPER && bound <= BOUND_EXACT)
 #define ValidScore(score) (score >= -MATE && score <= MATE)
@@ -56,7 +62,7 @@ typedef struct {
 } TTEntry;
 
 typedef struct {
-    TTEntry entries[2];
+    TTEntry entries[BUCKET_SIZE];
 } TTBucket;
 
 typedef struct {

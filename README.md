@@ -51,29 +51,72 @@ The initial proof of concept compares two simple table organizations:
 - **Direct-mapped table:** an alternative implementation with one entry per
   bucket.
 
-This comparison is intended to validate the experimental infrastructure. It is
-not yet a controlled scientific comparison because changing the bucket size
-also changes table capacity and replacement behavior.
+Build both table organizations with:
+
+```bash
+make -C src basic BUCKET_SIZE=1 EXE=weiss-direct
+make -C src basic BUCKET_SIZE=2 EXE=weiss-two-way
+```
+
+`BUCKET_SIZE=1` selects the direct-mapped table. `BUCKET_SIZE=2` selects the
+original two-way bucketed table and is the default when no value is provided.
+
+Run a recorded comparison with:
+
+```bash
+python3 scripts/run_poc.py --threads 1 2 4 8 --hash-mb 64 --repetitions 5
+```
+
+The runner builds both binaries, alternates their run order between repetitions,
+and creates a new directory under `results/poc/runs/`. Each run has a raw engine
+log and a row in `runs.csv`; `run-info.txt` records the machine, Git state,
+commands, and binary hashes. Use `--help` to see smaller test configurations or
+`--skip-build` to run binaries that were already built.
+
+### Thread-scaling experiment
+
+Both variants were benchmarked five times at depth 12 with a 64 MB
+transposition table and 1, 2, 4, and 8 search threads. The values below are
+arithmetic means across the five runs. `NPS` is the mean of the per-run NPS
+values reported by the engine.
+
+| Table | Threads | Time (ms) | Nodes | NPS |
+|---|---:|---:|---:|---:|
+| Direct-mapped | 1 | 1203.6 | 3,694,620 | 3,069,794 |
+| Direct-mapped | 2 | 1149.8 | 7,028,384 | 6,113,117 |
+| Direct-mapped | 4 | 1116.0 | 12,561,720 | 11,257,196 |
+| Direct-mapped | 8 | 3367.8 | 23,239,055 | 8,469,607 |
+| Two-way | 1 | 2477.8 | 3,552,237 | 1,433,952 |
+| Two-way | 2 | 1558.2 | 7,005,713 | 4,897,776 |
+| Two-way | 4 | 1144.6 | 12,491,176 | 10,933,995 |
+| Two-way | 8 | 1516.4 | 22,791,003 | 15,041,980 |
+
+These measurements are an initial proof-of-concept result, not a controlled
+performance evaluation. In particular, the direct-mapped 8-thread runs had
+large timing variation, and parallel runs can search different node counts
+because threads concurrently replace shared transposition-table entries.
+Repeated runs on an otherwise idle machine, CPU affinity, and more extensive
+sampling are needed for stronger conclusions.
 
 ### Progress
 
-- [ ] Record the exact upstream baseline
-- [ ] Verify the unmodified ARM64 build
-- [ ] Record a baseline benchmark
-- [ ] Make the TT organization selectable at compile time
-- [ ] Build the original two-way TT
-- [ ] Build the direct-mapped TT
-- [ ] Verify configurable pthread counts
-- [ ] Verify configurable TT memory sizes
+- [x] Record the exact upstream baseline
+- [x] Verify the unmodified ARM64 build
+- [x] Record a baseline benchmark
+- [x] Make the TT organization selectable at compile time
+- [x] Build the original two-way TT
+- [x] Build the direct-mapped TT
+- [x] Verify configurable pthread counts
+- [x] Verify configurable TT memory sizes
 - [ ] Add structured experiment logging
-- [ ] Document the proof-of-concept results
+- [x] Document the proof-of-concept results
 
 ## Upstream baseline
 
 The experimental work is based on:
 
 - Upstream repository: https://github.com/TerjeKir/weiss
-- Upstream commit: `735b8f3d2ddb0cdf42b135a5fb42e21c01f7a3d`
+- Upstream commit: `c735b8f3d2ddb0cdf42b135a5fb42e21c01f7a3d`
 - Local baseline tag: `upstream-baseline-c735b8f`
 
 The project intentionally uses a fixed upstream revision so that experiments
@@ -97,3 +140,4 @@ Install the Xcode Command Line Tools if they are not already available:
 
 ```bash
 xcode-select --install
+```
