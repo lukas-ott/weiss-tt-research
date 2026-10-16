@@ -18,7 +18,7 @@
 | Original | 8 | 64 MB | 1187 | 19995063 | 16.845.040 |
 
 ## Status
-
+l
 - [x] ARM64 build
 - [x] Baseline benchmark
 - [x] Configurable search threads
