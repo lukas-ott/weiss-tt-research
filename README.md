@@ -72,9 +72,9 @@ also changes table capacity and replacement behavior.
 
 The experimental work is based on:
 
-- Upstream repository: <https://github.com/TerjeKir/weiss>
-- Upstream commit: `<c735b8f3d2ddb0cdf42b135a5fb42e21c01f7a3d>`
-- Local baseline tag: `upstream-baseline-<c735b8f>`
+- Upstream repository: https://github.com/TerjeKir/weiss
+- Upstream commit: `735b8f3d2ddb0cdf42b135a5fb42e21c01f7a3d`
+- Local baseline tag: `upstream-baseline-c735b8f`
 
 The project intentionally uses a fixed upstream revision so that experiments
 remain reproducible.
@@ -85,8 +85,8 @@ The initial proof of concept is developed and tested on:
 
 - Machine: Apple MacBook Air with Apple M2
 - Architecture: ARM64
-- Operating system: macOS `<26.6.2>`
-- Compiler: Apple Clang `<17.0.0 (clang-1700.6.4.2)>`
+- Operating system: macOS `26.6.2`
+- Compiler: Apple Clang `17.0.0 (clang-1700.6.4.2)`
 
 Large-scale experiments will later be run on an ARM-based university server.
 That server is outside the scope of the initial proof of concept.
