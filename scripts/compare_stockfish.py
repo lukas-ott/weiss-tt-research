@@ -15,7 +15,7 @@ OUTPUT_DIR = ROOT / "results/stockfish-comparison/kiloampere-20261028"
 NEAR_BEST_CP = 25  # Descriptive tolerance, in Stockfish's own score scale.
 # =============================================================================
 
-CONFIG = ["condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+CONFIG = ["condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "cpu_binding", "binary_sha256"]
 
 
 def compare(positions, reference):
@@ -25,6 +25,9 @@ def compare(positions, reference):
         positions["cap_helpers"] = 0
     if "rotate_root_moves" not in positions:
         positions["rotate_root_moves"] = 0
+    if "cpu_binding" not in positions:
+        positions["cpu_binding"] = "none"
+    positions["cpu_binding"] = positions["cpu_binding"].fillna("none")
     if "condition" not in positions:
         positions["condition"] = "candidate"
     if reference.duplicated(["position", "move"]).any():
@@ -109,6 +112,9 @@ def main():
         positions["cap_helpers"] = 0
     if "rotate_root_moves" not in positions:
         positions["rotate_root_moves"] = 0
+    if "cpu_binding" not in positions:
+        positions["cpu_binding"] = "none"
+    positions["cpu_binding"] = positions["cpu_binding"].fillna("none")
     if "condition" not in positions:
         positions["condition"] = "candidate"
     rows = compare(positions, reference)

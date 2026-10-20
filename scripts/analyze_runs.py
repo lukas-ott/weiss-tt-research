@@ -12,7 +12,7 @@ def summarize(runs):
     # Keep configurations and engine builds separate.
     group_columns = [
         "condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
-        "rotate_root_moves", "binary_sha256"
+        "rotate_root_moves", "cpu_binding", "binary_sha256"
     ]
     rows = []
 
@@ -51,6 +51,9 @@ def main():
         runs["cap_helpers"] = 0
     if "rotate_root_moves" not in runs:
         runs["rotate_root_moves"] = 0
+    if "cpu_binding" not in runs:
+        runs["cpu_binding"] = "none"
+    runs["cpu_binding"] = runs["cpu_binding"].fillna("none")
     if "condition" not in runs:
         runs["condition"] = "candidate"
     summary = summarize(runs)

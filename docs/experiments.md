@@ -26,8 +26,10 @@ python3 scripts/run_experiments.py
 ```
 
 Detach with `Ctrl-b`, then `d`; reconnect with `tmux attach -t weiss`. Follow any
-server scheduler or CPU-allocation rules. The runner inherits affinity and NUMA
-policy; it does not reserve or pin CPUs.
+server scheduler or CPU-allocation rules. By default the runner inherits CPU
+affinity and NUMA policy. A Linux-only `cpu_binding="physical"` setting can pin
+each candidate worker to a distinct allowed physical core for a controlled
+comparison.
 
 ## Edit the experiment
 
@@ -42,10 +44,11 @@ EXTRA_RUNS = [
     {"name": "threads-2", "threads": 2},
     {"name": "threads-32", "threads": 32},
     {"name": "hash-64", "hash_mb": 64},
+    {"name": "threads-32-pinned", "threads": 32, "cpu_binding": "physical"},
 ]
 ```
 
-This means three separate extra configurations plus the automatic default; it
+This means four separate extra configurations plus the automatic default; it
 does not create every combination of the listed values. Prefer changing one
 setting per extra when you want to attribute an effect to that setting. Use a
 named multi-setting extra only when you intend to study those settings together.
@@ -54,12 +57,44 @@ An extra that duplicates the default or another configuration is rejected.
 For the default and every extra, and for every repetition, the runner executes
 two fresh benchmark processes: the pinned baseline source and the current
 checkout. They receive the same depth, thread count, TT size, bucket size and
-benchmark-only switches. The same ordered 50 positions are searched, one process
-at a time. Their order within each pair is randomized with `ORDER_SEED`. Each
-`comparison_id` links the pair.
+benchmark-only switches. For `cpu_binding="physical"`, only the candidate can
+apply per-thread affinity because the reference source predates the feature.
+The same ordered 50 positions are searched, one process at a time. Their order
+within each pair is randomized with `ORDER_SEED`. Each `comparison_id` links the
+pair.
 This is an equal-work source comparison; when the current C source is identical
 to the reference, the two builds are an implementation check and repeatability
 control rather than a search change.
+
+### Linux worker-to-core binding
+
+`cpu_binding` accepts `"none"` or `"physical"` and defaults to `"none"`. For a
+`"physical"` extra, the runner reads the process's allowed CPU set and Linux
+sysfs topology, chooses one logical CPU from each allowed physical core, and
+passes that CPU list to the candidate engine. Weiss assigns worker index 0 (the
+main search worker) to the first CPU, helper 1 to the second, and so on. The
+engine sets each pthread's affinity before the thread starts. The runner rejects
+requests exceeding the allowed physical-core count and records the exact CPU map.
+
+The pinned baseline revision predates this feature, so its `"physical"` pair
+remains unpinned. `runs.csv` records requested `cpu_binding` alongside the
+engine-reported `applied_cpu_binding` and `cpu_list`; `comparisons.csv` includes
+both builds' applied modes and CPU lists. Compare the candidate's pinned and unpinned
+configurations at the same thread count to isolate the placement effect. CPU
+binding does not set memory policy or distribute workers across NUMA nodes; the
+chosen CPU order follows package/core IDs and can therefore be compact.
+
+Set `CHECK_THREAD_AFFINITY = True` in `scripts/run_experiments.py` to run a
+separate Linux preflight for each distinct pinned candidate build/thread-count
+combination. Each worker reports its requested CPU, a `sched_getcpu()` sample,
+and the allowed CPU mask read from `pthread_getaffinity_np()`. The runner checks
+that each mask contains exactly the requested CPU and that the worker was
+observed running there. Results go to `affinity-checks.csv`; full engine output
+is kept under `raw/affinity-check-*.log`. These checks run before the timed
+benchmarks, so they do not add instrumentation to search timing, though their
+startup time counts toward the overall experiment wall-time budget. Set the
+switch to `False` to skip the preflight. This is a startup verification, not
+continuous sampling during the benchmark.
 
 The fixed reference is commit
 `c55272499a460acdb7bd057ad55d495b65faaefd`. It is checked out temporarily in a
@@ -67,7 +102,7 @@ detached Git worktree, built, and removed before searches start. Its executable
 and hash are retained in the output. Change `BASELINE_GIT_REF` only when you
 intentionally reset the thesis control, and record why in the experiment record.
 
-`TIME_BUDGET_HOURS` includes builds, benchmark processes and self-play. A
+`TIME_BUDGET_HOURS` includes builds, affinity checks, benchmark processes and self-play. A
 benchmark timeout applies to one complete 50-position process. Completed runs
 remain in the CSVs if the budget expires; incomplete logs are not counted as
 completed measurements.

@@ -185,6 +185,10 @@ static int HashInput(char *str) {
 // Sets up the engine and follows UCI protocol commands
 int main(int argc, char **argv) {
 
+    // Verify Linux worker affinity without entering the timed search benchmark.
+    if (argc > 1 && !strcmp(argv[1], "affinity-check"))
+        return CheckThreadAffinity(argc, argv);
+
     // Benchmark
     if (argc > 1 && strstr(argv[1], "bench"))
         return Benchmark(argc, argv), 0;

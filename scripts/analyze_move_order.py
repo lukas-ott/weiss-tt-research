@@ -36,7 +36,7 @@ SHOW_ERROR_BARS = True  # ±1 sample SD across paired repetitions.
 
 CONFIG = [
     "condition", "bucket_size", "phase", "depth", "threads", "hash_mb",
-    "cap_helpers", "binary_sha256",
+    "cap_helpers", "cpu_binding", "binary_sha256",
 ]
 PAIR_KEYS = CONFIG + ["repetition"]
 RUN_METRICS = ["wall_ns", "cpu_ns", "nodes", "main_nodes"]
@@ -102,6 +102,9 @@ def read_data(experiment_dir):
     for frame in (runs, positions):
         if "condition" not in frame:
             frame["condition"] = "candidate"
+        if "cpu_binding" not in frame:
+            frame["cpu_binding"] = "none"
+        frame["cpu_binding"] = frame["cpu_binding"].fillna("none")
     required_run = set(CONFIG + ["repetition", "run", "rotate_root_moves"] + RUN_METRICS)
     required_position = set(
         POSITION_KEYS + ["rotate_root_moves", "bestmove", "score_type", "score"]
@@ -327,10 +330,10 @@ def make_figures(summary, output_dir):
     performance_figures = []
     quality_figures = []
     group_columns = [
-        "condition", "bucket_size", "phase", "hash_mb", "cap_helpers", "binary_sha256",
+        "condition", "bucket_size", "phase", "hash_mb", "cap_helpers", "cpu_binding", "binary_sha256",
     ]
     for keys, subset in summary.groupby(group_columns, dropna=False, sort=True):
-        condition, bucket, phase, memory, cap, binary = keys
+        condition, bucket, phase, memory, cap, cpu_binding, binary = keys
         depths = sorted(subset["depth"].unique())
         cmap = plt.get_cmap("turbo", max(1, len(depths)))
         colors = {depth: cmap(i) for i, depth in enumerate(depths)}
