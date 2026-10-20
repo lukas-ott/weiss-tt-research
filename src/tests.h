@@ -26,6 +26,7 @@
 extern bool BenchmarkRunning;
 
 void Benchmark(int argc, char **argv);
+int CheckThreadAffinity(int argc, char **argv);
 
 #ifdef DEV
 void Perft(char *line);

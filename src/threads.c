@@ -146,6 +146,79 @@ int ThreadCPUForIndex(int index) {
 #endif
 }
 
+#ifdef __linux__
+typedef struct {
+    cpu_set_t allowed;
+    int expectedCPU;
+    int runningCPU;
+    int error;
+    int allowedCount;
+    bool passed;
+} AffinityCheckResult;
+
+static AffinityCheckResult *affinityCheckResults;
+
+static void *InspectWorkerAffinity(void *argument) {
+    Thread *thread = argument;
+    AffinityCheckResult *result = &affinityCheckResults[thread->index];
+    result->expectedCPU = workerCPUs[thread->index];
+    result->runningCPU = sched_getcpu();
+    CPU_ZERO(&result->allowed);
+    result->error = pthread_getaffinity_np(pthread_self(), sizeof(result->allowed), &result->allowed);
+    if (result->error) return NULL;
+
+    result->allowedCount = CPU_COUNT(&result->allowed);
+    result->passed = result->allowedCount == 1
+                  && CPU_ISSET(result->expectedCPU, &result->allowed)
+                  && result->runningCPU == result->expectedCPU;
+    return NULL;
+}
+#endif
+
+int VerifyThreadAffinity(void) {
+#ifndef __linux__
+    puts("AFFINITY_RESULT status=fail reason=linux-only");
+    return 1;
+#else
+    if (!ThreadBindingEnabled()) {
+        puts("AFFINITY_RESULT status=fail reason=cpu-binding-not-configured");
+        return 1;
+    }
+
+    affinityCheckResults = calloc(Threads->count, sizeof(*affinityCheckResults));
+    if (!affinityCheckResults) {
+        puts("AFFINITY_RESULT status=fail reason=allocation-failed");
+        return 1;
+    }
+
+    RunWithAllThreads(InspectWorkerAffinity);
+
+    bool passed = true;
+    for (int i = 0; i < Threads->count; ++i) {
+        AffinityCheckResult *result = &affinityCheckResults[i];
+        printf("AFFINITY_THREAD thread=%d expected_cpu=%d running_cpu=%d allowed_count=%d allowed_cpus=",
+               i, result->expectedCPU, result->runningCPU, result->allowedCount);
+        bool first = true;
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+            if (CPU_ISSET(cpu, &result->allowed)) {
+                printf("%s%d", first ? "" : ",", cpu);
+                first = false;
+            }
+        if (first) printf("none");
+        printf(" status=%s", result->passed ? "pass" : "fail");
+        if (result->error) printf(" error=%d", result->error);
+        putchar('\n');
+        passed &= result->passed;
+    }
+
+    printf("AFFINITY_RESULT threads=%d status=%s\n",
+           Threads->count, passed ? "pass" : "fail");
+    free(affinityCheckResults);
+    affinityCheckResults = NULL;
+    return passed ? 0 : 1;
+#endif
+}
+
 
 // A failed worker launch must fail the run, not masquerade as a scaling result.
 static void CheckThreadCall(int error, const char *operation) {

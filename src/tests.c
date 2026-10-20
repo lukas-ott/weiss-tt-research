@@ -232,6 +232,17 @@ void Benchmark(int argc, char **argv) {
     BenchmarkRunning = false;
 }
 
+int CheckThreadAffinity(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s affinity-check <threads>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    int threadCount = BenchArgument(argv[2], "threads", 1, 2048);
+    InitThreads(threadCount);
+    return VerifyThreadAffinity();
+}
+
 #ifdef DEV
 
 // Helper for Perft()

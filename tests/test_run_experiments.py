@@ -96,6 +96,76 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(runner.BudgetExpired):
                 runner.budget_timeout(99)
 
+    def test_affinity_preflight_is_deduplicated_by_candidate_build_and_threads(self):
+        plan = [
+            {"condition": "candidate", "cpu_binding": "physical", "bucket_size": 2,
+             "cap_helpers": 0, "threads": 8},
+            {"condition": "candidate", "cpu_binding": "physical", "bucket_size": 2,
+             "cap_helpers": 0, "threads": 8},
+            {"condition": "candidate", "cpu_binding": "physical", "bucket_size": 2,
+             "cap_helpers": 0, "threads": 32},
+            {"condition": "baseline", "cpu_binding": "physical", "bucket_size": 2,
+             "cap_helpers": 0, "threads": 8},
+            {"condition": "candidate", "cpu_binding": "none", "bucket_size": 2,
+             "cap_helpers": 0, "threads": 8},
+        ]
+        self.assertEqual(runner.affinity_check_specs(plan),
+                         [(2, 0, 8), (2, 0, 32)])
+
+    def test_affinity_parser_checks_cpu_mask_and_running_cpu(self):
+        cpus = [4, 8]
+        self.log.write_text(
+            "AFFINITY_THREAD thread=0 expected_cpu=4 running_cpu=4 allowed_count=1 "
+            "allowed_cpus=4 status=pass\n"
+            "AFFINITY_THREAD thread=1 expected_cpu=8 running_cpu=8 allowed_count=1 "
+            "allowed_cpus=8 status=pass\n"
+            "AFFINITY_RESULT threads=2 status=pass\n")
+        rows, passed = runner.parse_affinity_check(
+            self.log, check_id="sample", bucket_size=2, cap_helpers=0, threads=2,
+            physical_cpu_ids=cpus)
+        self.assertTrue(passed)
+        self.assertEqual([row["status"] for row in rows], ["pass", "pass"])
+        self.assertEqual([row["running_cpu"] for row in rows], cpus)
+
+        self.log.write_text(self.log.read_text().replace("allowed_cpus=8", "allowed_cpus=8,9"))
+        rows, passed = runner.parse_affinity_check(
+            self.log, check_id="sample", bucket_size=2, cap_helpers=0, threads=2,
+            physical_cpu_ids=cpus)
+        self.assertFalse(passed)
+        self.assertEqual(rows[1]["status"], "fail")
+
+    def test_affinity_preflight_runs_before_measurement_and_saves_worker_rows(self):
+        output = self.root / "affinity-run"
+        (output / "raw").mkdir(parents=True)
+        binary = self.root / "weiss-candidate"
+        plan = [{"condition": "candidate", "cpu_binding": "physical",
+                 "bucket_size": 2, "cap_helpers": 0, "threads": 2}]
+        binaries = {("candidate", 2, 0): (binary, "unused-hash")}
+        calls = []
+
+        def fake_command(command, log, timeout, env=None, check=True):
+            calls.append((command, timeout, env, check))
+            self.assertEqual(env["WEISS_CPU_LIST"], "4,8")
+            log.write(
+                "AFFINITY_THREAD thread=0 expected_cpu=4 running_cpu=4 allowed_count=1 "
+                "allowed_cpus=4 status=pass\n"
+                "AFFINITY_THREAD thread=1 expected_cpu=8 running_cpu=8 allowed_count=1 "
+                "allowed_cpus=8 status=pass\n"
+                "AFFINITY_RESULT threads=2 status=pass\n")
+            return 0
+
+        with patch.object(runner, "CHECK_THREAD_AFFINITY", True), patch.object(
+                runner, "run_command", side_effect=fake_command):
+            checked = runner.run_affinity_checks(plan, output, binaries, [4, 8], deadline=None)
+
+        self.assertEqual(checked, 2)
+        self.assertEqual(calls[0][0], [str(binary), "affinity-check", "2"])
+        self.assertFalse(calls[0][3])  # Collect output even on failure for the CSV/log.
+        with (output / "affinity-checks.csv").open(newline="") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual([row["status"] for row in rows], ["pass", "pass"])
+        self.assertEqual([row["expected_cpu"] for row in rows], ["4", "8"])
+
     def test_plan_always_includes_defaults_and_extras_only_override_named_settings(self):
         extras = [{"name": "threads-2", "threads": 2}, {"name": "depth-5", "depth": 5}]
         a = runner.make_plan(extra_runs=extras, repetitions=2)

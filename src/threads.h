@@ -110,5 +110,6 @@ void ResetThreads();
 void RunWithAllThreads(void *(*func)(void *));
 bool ThreadBindingEnabled(void);
 int ThreadCPUForIndex(int index);
+int VerifyThreadAffinity(void);
 void Wait(atomic_bool *condition);
 void Wake();

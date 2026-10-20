@@ -48,7 +48,9 @@ ORDER_SEED = 2026                   # Randomizes paired config order and pair or
 CC = "gcc"
 TIMEOUT_SECONDS = 300               # Whole 50-position process; None disables.
 EXPERIMENT_SLUG = "thread-scaling"
-TIME_BUDGET_HOURS = 6.5             # Includes builds, bench and final self-play smoke.
+TIME_BUDGET_HOURS = 6.5             # Includes builds, affinity checks, bench and self-play.
+CHECK_THREAD_AFFINITY = True        # Diagnostic only; checks run before timed benchmarks.
+AFFINITY_CHECK_TIMEOUT_SECONDS = 30
 
 # This is the reference engine code. Every candidate run is paired against it
 # with identical benchmark arguments. Change only when intentionally resetting
@@ -78,6 +80,9 @@ RUN_FIELDS = ["run", "comparison_id", "condition", "config_name", "repetition",
               *CONFIG_FIELDS, "phase"]
 PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
 OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$")
+AFFINITY_FIELDS = ["check", "bucket_size", "cap_helpers", "threads", "thread_index",
+                   "expected_cpu", "running_cpu", "allowed_cpu_count", "allowed_cpus",
+                   "status", "raw_log"]
 
 
 def utc_now():
@@ -324,6 +329,73 @@ def worker_environment(run, physical_cpu_ids):
     return environment
 
 
+def affinity_check_specs(plan):
+    """Deduplicate candidate affinity checks by build variant and worker count."""
+    return sorted({(run["bucket_size"], run["cap_helpers"], run["threads"])
+                   for run in plan
+                   if run["condition"] == "candidate" and run["cpu_binding"] == "physical"})
+
+
+def parse_affinity_check(path, *, check_id, bucket_size, cap_helpers, threads,
+                         physical_cpu_ids):
+    """Return one observed mask per worker and whether all masks match the requested CPUs."""
+    observed = {}
+    final_threads = None
+    final_status = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        fields = dict(re.findall(r"(\w+)=([^\s]+)", line))
+        if line.startswith("AFFINITY_THREAD "):
+            try:
+                index = int(fields["thread"])
+                observed[index] = fields
+            except (KeyError, ValueError):
+                continue
+        elif line.startswith("AFFINITY_RESULT "):
+            try:
+                final_threads = int(fields["threads"])
+                final_status = fields["status"]
+            except (KeyError, ValueError):
+                final_status = "fail"
+
+    rows = []
+    all_passed = final_threads == threads and final_status == "pass"
+    for index in range(threads):
+        fields = observed.get(index, {})
+        expected_cpu = physical_cpu_ids[index]
+        try:
+            logged_expected = int(fields.get("expected_cpu", "-1"))
+            running_cpu = int(fields.get("running_cpu", "-1"))
+            allowed_count = int(fields.get("allowed_count", "0"))
+        except ValueError:
+            logged_expected, running_cpu, allowed_count = -1, -1, 0
+        allowed_cpus = fields.get("allowed_cpus", "missing")
+        status = fields.get("status", "missing")
+        valid = (status == "pass" and logged_expected == expected_cpu
+                 and running_cpu == expected_cpu
+                 and allowed_count == 1 and allowed_cpus == str(expected_cpu))
+        if not valid:
+            all_passed = False
+        rows.append({"check": check_id, "bucket_size": bucket_size,
+                     "cap_helpers": cap_helpers, "threads": threads,
+                     "thread_index": index, "expected_cpu": expected_cpu,
+                     "running_cpu": running_cpu,
+                     "allowed_cpu_count": allowed_count, "allowed_cpus": allowed_cpus,
+                     "status": "pass" if valid else "fail",
+                     "raw_log": str(path)})
+    return rows, all_passed
+
+
+def append_affinity_results(path, rows):
+    if not rows:
+        return
+    exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=AFFINITY_FIELDS)
+        if not exists:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
 def make_plan(*, extra_runs=None, repetitions=None):
     """Create default plus explicit override runs; no Cartesian products."""
     extras = EXTRA_RUNS if extra_runs is None else extra_runs
@@ -545,6 +617,7 @@ def record_metadata(output_dir, deadline=None, physical_cpu_ids=None):
                f"source_status_before_run:\n{status or '(clean)'}",
                f"runner_command: {shlex.join(sys.argv)}", f"order_seed: {ORDER_SEED}",
                f"baseline_git_ref: {BASELINE_GIT_REF or '(disabled; same source for test fixture)'}",
+               f"check_thread_affinity: {CHECK_THREAD_AFFINITY}",
                f"timeout_seconds: {TIMEOUT_SECONDS}",
                f"total_budget_seconds_at_metadata: {None if deadline is None else max(0, deadline - time.monotonic())}",
                f"allowed_cpus: {sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else 'unavailable'}",
@@ -579,7 +652,7 @@ def budget_timeout(deadline, per_run_limit=None):
     return min(remaining, per_run_limit) if per_run_limit is not None else remaining
 
 
-def run_command(command, file, timeout, env=None):
+def run_command(command, file, timeout, env=None, check=True):
     """On timeout/interrupt, also stop compiler children rather than leaving jobs behind."""
     process = subprocess.Popen(command, cwd=ROOT, stdout=file, stderr=subprocess.STDOUT,
                                start_new_session=os.name == "posix", env=env)
@@ -595,8 +668,9 @@ def run_command(command, file, timeout, env=None):
             pass
         process.wait()
         raise
-    if code:
+    if code and check:
         raise subprocess.CalledProcessError(code, command)
+    return code
 
 
 def pgn_result_headers(path):
@@ -616,6 +690,44 @@ def pgn_result_headers(path):
     if tags:
         games.append(tags)
     return games
+
+
+def run_affinity_checks(plan, output_dir, binaries, physical_cpu_ids, deadline):
+    """Verify real worker affinity before the measured benchmark processes start."""
+    if not CHECK_THREAD_AFFINITY:
+        return 0
+    specs = affinity_check_specs(plan)
+    if not specs:
+        return 0
+
+    results_path = Path(output_dir) / "affinity-checks.csv"
+    with results_path.open("w", newline="", encoding="utf-8") as file:
+        csv.DictWriter(file, fieldnames=AFFINITY_FIELDS).writeheader()
+
+    checked_workers = 0
+    for bucket, cap, threads in specs:
+        binary = binaries["candidate", bucket, cap][0]
+        check_id = f"b{bucket}-cap{cap}-t{threads}"
+        raw = Path(output_dir) / "raw" / f"affinity-check-{check_id}.log"
+        command = [str(binary), "affinity-check", str(threads)]
+        print(f"Checking worker affinity: {check_id}", flush=True)
+        with raw.open("w", encoding="utf-8") as log:
+            code = run_command(command, log,
+                               budget_timeout(deadline, AFFINITY_CHECK_TIMEOUT_SECONDS),
+                               env=worker_environment({"cpu_binding": "physical",
+                                                       "threads": threads}, physical_cpu_ids),
+                               check=False)
+        rows, passed = parse_affinity_check(
+            raw, check_id=check_id, bucket_size=bucket, cap_helpers=cap,
+            threads=threads, physical_cpu_ids=physical_cpu_ids)
+        for row in rows:
+            row["raw_log"] = str(raw.relative_to(output_dir))
+        append_affinity_results(results_path, rows)
+        checked_workers += len(rows)
+        if code or not passed:
+            raise RuntimeError(f"Thread affinity verification failed for {check_id}; see {raw}")
+        print(f"  verified {threads} workers on distinct physical cores", flush=True)
+    return checked_workers
 
 
 def run_selfplay_smoke(output_dir, baseline_binary, candidate_binary, deadline):
@@ -722,6 +834,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
             "Root move rotation": sorted({run["rotate_root_moves"] for run in plan}),
             "CPU binding modes": sorted({run["cpu_binding"] for run in plan}),
             "Physical core CPU map": physical_cpu_ids or "not requested",
+            "Check thread affinity before timing": CHECK_THREAD_AFFINITY,
             "Repetitions": sorted({run["repetition"] for run in plan}),
             "Timeout": TIMEOUT_SECONDS,
             "Time budget (hours)": TIME_BUDGET_HOURS,
@@ -743,6 +856,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                 "A short color-swapped self-play smoke check runs after benchmark pairs; Cute Chess CLI is required before the run starts.",
                 "Physical binding pins candidate workers only; the pinned reference source does not contain this feature and remains unpinned.",
                 "CPU IDs come from the process's allowed cpuset and Linux physical-core topology; NUMA placement is otherwise unchanged.",
+                "Affinity verification runs as a separate untimed engine command and checks each worker's actual allowed CPU mask.",
             ],
             source_commit=source["commit"], source_status=source["status"],
             binaries=built_binaries, status=state,
@@ -789,7 +903,16 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                     built_binaries.append((f"{condition}/{binary.name}", digest))
         finally:
             remove_baseline_source(worktree)
-        update_record("running", results="Builds completed; benchmark runs are in progress.")
+        update_record("checking-affinity", results="Builds completed; checking Linux worker CPU masks before timing.")
+        checked_workers = run_affinity_checks(
+            plan, output_dir, binaries, physical_cpu_ids, deadline)
+        if checked_workers:
+            affinity_summary = (f"Affinity check passed for {checked_workers} workers; "
+                                "benchmark runs are in progress.")
+        else:
+            affinity_summary = ("No physical CPU binding requested, so the affinity preflight "
+                                "was skipped; benchmark runs are in progress.")
+        update_record("running", results=affinity_summary)
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
                           "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
                           "helper_nodes_beyond_depth", "helper_max_started_iteration",
@@ -869,6 +992,11 @@ def main():
     if (type(TIME_BUDGET_HOURS) not in (int, float) or not math.isfinite(TIME_BUDGET_HOURS)
             or not 0 < TIME_BUDGET_HOURS <= 24):
         raise ValueError("TIME_BUDGET_HOURS must be positive and at most 24 hours")
+    if type(CHECK_THREAD_AFFINITY) is not bool:
+        raise ValueError("CHECK_THREAD_AFFINITY must be True or False")
+    if (type(AFFINITY_CHECK_TIMEOUT_SECONDS) not in (int, float)
+            or AFFINITY_CHECK_TIMEOUT_SECONDS <= 0):
+        raise ValueError("AFFINITY_CHECK_TIMEOUT_SECONDS must be positive")
     plan = make_experiment_plan()
     validate_paired_plan(plan)
     physical_cpu_ids = resolve_cpu_binding(plan)
@@ -895,6 +1023,12 @@ def main():
             source_root = (f"<baseline-worktree:{BASELINE_GIT_REF}>"
                            if condition == "baseline" and BASELINE_GIT_REF else ROOT)
             print(shlex.join(build_command(bucket, binary, cap, source_root)))
+        if CHECK_THREAD_AFFINITY:
+            for bucket, cap, threads in affinity_check_specs(plan):
+                binary = Path('<run-directory>') / 'bin' / 'candidate' / f'weiss-b{bucket}-cap{cap}'
+                cpus = physical_cpu_ids[:threads]
+                print(f"affinity-check cpus={cpus}: " + shlex.join(
+                    [str(binary), "affinity-check", str(threads)]))
         for run in plan:
             binary = (Path("<run-directory>") / "bin" / run["condition"]
                       / f"weiss-b{run['bucket_size']}-cap{run['cap_helpers']}")

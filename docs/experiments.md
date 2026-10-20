@@ -84,13 +84,25 @@ configurations at the same thread count to isolate the placement effect. CPU
 binding does not set memory policy or distribute workers across NUMA nodes; the
 chosen CPU order follows package/core IDs and can therefore be compact.
 
+Set `CHECK_THREAD_AFFINITY = True` in `scripts/run_experiments.py` to run a
+separate Linux preflight for each distinct pinned candidate build/thread-count
+combination. Each worker reports its requested CPU, a `sched_getcpu()` sample,
+and the allowed CPU mask read from `pthread_getaffinity_np()`. The runner checks
+that each mask contains exactly the requested CPU and that the worker was
+observed running there. Results go to `affinity-checks.csv`; full engine output
+is kept under `raw/affinity-check-*.log`. These checks run before the timed
+benchmarks, so they do not add instrumentation to search timing, though their
+startup time counts toward the overall experiment wall-time budget. Set the
+switch to `False` to skip the preflight. This is a startup verification, not
+continuous sampling during the benchmark.
+
 The fixed reference is commit
 `c55272499a460acdb7bd057ad55d495b65faaefd`. It is checked out temporarily in a
 detached Git worktree, built, and removed before searches start. Its executable
 and hash are retained in the output. Change `BASELINE_GIT_REF` only when you
 intentionally reset the thesis control, and record why in the experiment record.
 
-`TIME_BUDGET_HOURS` includes builds, benchmark processes and self-play. A
+`TIME_BUDGET_HOURS` includes builds, affinity checks, benchmark processes and self-play. A
 benchmark timeout applies to one complete 50-position process. Completed runs
 remain in the CSVs if the budget expires; incomplete logs are not counted as
 completed measurements.
