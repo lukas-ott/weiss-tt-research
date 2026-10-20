@@ -157,9 +157,17 @@ void Benchmark(int argc, char **argv) {
 
     printf("BENCH_CONFIG depth=%d threads=%d hash_mb=%" PRIu64
            " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64
-           " cap_helpers=%d rotate_root_moves=%d\n",
+           " cap_helpers=%d rotate_root_moves=%d cpu_binding=%s cpu_list=",
            Limits.depth, threadCount, TT.currentMB, BUCKET_SIZE,
-           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers, Limits.rotateRootMoves);
+           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers,
+           Limits.rotateRootMoves, ThreadBindingEnabled() ? "physical" : "none");
+    if (ThreadBindingEnabled()) {
+        for (int i = 0; i < threadCount; ++i)
+            printf("%s%d", i ? "," : "", ThreadCPUForIndex(i));
+    } else {
+        printf("none");
+    }
+    putchar('\n');
 
     puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth");
     for (int i = 0; i < FENCount; ++i) {

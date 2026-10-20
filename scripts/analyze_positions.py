@@ -12,7 +12,7 @@ def summarize(positions):
     # Keep different positions, configurations and engine builds separate.
     group_columns = [
         "condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
-        "rotate_root_moves", "binary_sha256", "position"
+        "rotate_root_moves", "cpu_binding", "binary_sha256", "position"
     ]
     rows = []
 
@@ -50,6 +50,9 @@ def main():
         positions["cap_helpers"] = 0
     if "rotate_root_moves" not in positions:
         positions["rotate_root_moves"] = 0
+    if "cpu_binding" not in positions:
+        positions["cpu_binding"] = "none"
+    positions["cpu_binding"] = positions["cpu_binding"].fillna("none")
     if "condition" not in positions:
         positions["condition"] = "candidate"
     summary = summarize(positions)

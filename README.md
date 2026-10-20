@@ -24,9 +24,10 @@ python3 scripts/run_experiments.py            # deliberately start the configure
 
 Run it after SSH-ing into the experiment server and cloning this repository.
 See [the experiment guide](docs/experiments.md) for server setup, editable settings,
-SSH disconnects, CPU/NUMA placement, output files and measurement rules. Results
-include per-position runtime, chosen move and score, paired run and position
-summaries, raw logs and build/machine metadata. The runner ends with a
+SSH disconnects, optional Linux worker-to-core binding, CPU/NUMA placement,
+output files and measurement rules. Results include per-position runtime,
+chosen move and score, paired run and position summaries, raw logs and
+build/machine metadata. The runner ends with a
 four-game color-swapped self-play smoke check; Cute Chess CLI must be installed
 and available on `PATH` before a run starts.
 This checks basic UCI/game operation; it is not a playing-strength test.

@@ -108,5 +108,7 @@ void StartHelpers(void *(*func)(void *));
 void WaitForHelpers();
 void ResetThreads();
 void RunWithAllThreads(void *(*func)(void *));
+bool ThreadBindingEnabled(void);
+int ThreadCPUForIndex(int index);
 void Wait(atomic_bool *condition);
 void Wake();

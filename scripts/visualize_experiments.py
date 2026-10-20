@@ -24,7 +24,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REFERENCE = ROOT / "results/stockfish19-reference-20261029/top5.csv"
-CONFIG = ["condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+CONFIG = ["condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "cpu_binding", "binary_sha256"]
 NUMERIC_RUN = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
                "cap_helpers", "rotate_root_moves", "wall_ns", "cpu_ns", "main_nodes", "nodes"]
 NUMERIC_POSITION = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
@@ -45,6 +45,7 @@ FILTERS = {
     "hash_mb": None,              # Example: [2, 64, 512]
     "cap_helpers": None,          # Example: [0] for uncapped, [1] for capped
     "rotate_root_moves": None,    # Example: [0] original, [1] worker-index rotation
+    "cpu_binding": None,          # Example: ["none"] or ["physical"] on Linux
 }
 
 CHART_GROUPS = {"scaling": True, "stockfish": True, "stability": True}
@@ -128,6 +129,9 @@ def read_experiments(paths):
                 frame["cap_helpers"] = 0
             if "rotate_root_moves" not in frame:
                 frame["rotate_root_moves"] = 0
+            if "cpu_binding" not in frame:
+                frame["cpu_binding"] = "none"
+            frame["cpu_binding"] = frame["cpu_binding"].fillna("none")
             if "condition" not in frame:
                 frame["condition"] = "candidate"
             numeric_columns(frame, ["rotate_root_moves"])
@@ -233,7 +237,7 @@ def make_run_summary(runs):
         data["process_wall_s"] = data["process_wall_ns"] / 1e9
         aggregations["process_wall_mean_s"] = ("process_wall_s", "mean")
     summary = data.groupby(CONFIG, dropna=False).agg(**aggregations).reset_index()
-    pairing = ["condition", "bucket_size", "depth", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+    pairing = ["condition", "bucket_size", "depth", "hash_mb", "cap_helpers", "rotate_root_moves", "cpu_binding", "binary_sha256"]
     paired = summary.loc[summary["threads"] == 1, pairing + ["wall_mean_s"]]
     paired = paired.rename(columns={"wall_mean_s": "one_thread_wall_mean_s"})
     summary = summary.merge(paired, on=pairing, how="left", validate="many_to_one")
@@ -436,7 +440,8 @@ def write_index(output_dir, inputs, figure_names, has_reference):
         "Each plotted point is the mean for one parameter configuration across completed repetitions; error bars show sample standard deviation.",
         "Runtime is wall-clock time for the 50-position suite, which is the measure of time to reach the requested depth. CPU time is summed over workers.",
         "Total nodes sum all workers; main-worker nodes show the root worker separately. Rising total nodes with falling or flat main-worker nodes means the helpers are adding work; it does not by itself mean faster progress.",
-        "Speedup compares the mean wall time with the matching one-worker configuration (same depth, TT, bucket, helper cap, root-order mode and build). Efficiency is speedup divided by worker count.",
+        "Speedup compares the mean wall time with the matching one-worker configuration (same depth, TT, bucket, helper cap, root-order mode, CPU-binding mode and build). Efficiency is speedup divided by worker count.",
+        "cpu_binding=physical means candidate worker threads are pinned to distinct allowed physical cores. The reference source predates this feature and stays unpinned; actual applied modes are recorded in comparisons.csv.",
         "Move stability is calculated per position across repetitions, then averaged over positions. CP standard deviation excludes mate scores.",
         "rotate_root_moves=1 rotates each helper's current normally ordered legal root-move list by worker index modulo legal root-move count once per root search; the main worker and below-root move ordering are unchanged.",
     ]

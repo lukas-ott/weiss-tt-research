@@ -125,7 +125,7 @@ class RunnerTests(unittest.TestCase):
         for pair in comparisons.values():
             baseline, candidate = pair["baseline"], pair["candidate"]
             for field in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
-                          "rotate_root_moves", "repetition"):
+                          "rotate_root_moves", "cpu_binding", "repetition"):
                 self.assertEqual(baseline[field], candidate[field])
         self.assertEqual({row["config_name"] for row in plan},
                          {"weiss-default", *(extra["name"] for extra in runner.EXTRA_RUNS)})
@@ -152,7 +152,7 @@ class RunnerTests(unittest.TestCase):
         clock = [100]
         bench_calls = []
 
-        def fake_command(command, file, timeout):
+        def fake_command(command, file, timeout, env=None):
             if command[0] == "make":
                 binary = Path(next(arg[4:] for arg in command if arg.startswith("EXE=")))
                 binary.write_bytes(b"fake binary, never executed")
@@ -314,7 +314,7 @@ if 'rev-parse' in sys.argv: print('fake-commit')
             '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1-0"]\n\n*\n\n'
         )
 
-        def fake_run(command, log, timeout):
+        def fake_run(command, log, timeout, env=None):
             Path(command[command.index("-pgnout") + 1]).write_text(pgn)
             log.write("fake Cute Chess completed four games\n")
 

@@ -29,6 +29,7 @@ WEISS_DEFAULT = {
     "hash_mb": 32,
     "cap_helpers": 0,
     "rotate_root_moves": 0,
+    "cpu_binding": "none",
 }
 # The Weiss default is always included. For each study, edit only EXTRA_RUNS;
 # each named configuration inherits every default it does not explicitly change.
@@ -63,7 +64,8 @@ SELFPLAY_GAMES = 4                    # Must be even; colors are swapped in pair
 SELFPLAY_TIME_CONTROL = "1+0.1"
 SELFPLAY_HASH_MB = WEISS_DEFAULT["hash_mb"]
 SELFPLAY_THREADS = WEISS_DEFAULT["threads"]
-# CPU/NUMA policy is inherited from your shell or scheduler; no automatic binding.
+# Set cpu_binding="physical" in an EXTRA_RUNS entry to pin candidate workers to
+# one allowed logical CPU per physical core on Linux. Default placement is inherited.
 # ==============================================================================
 
 POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "nodes",
@@ -71,7 +73,7 @@ POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "node
                    "helper_max_started_iteration", "helper_max_completed_iteration",
                    "helper_nodes_beyond_depth"]
 CONFIG_FIELDS = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
-                 "rotate_root_moves"]
+                 "rotate_root_moves", "cpu_binding"]
 RUN_FIELDS = ["run", "comparison_id", "condition", "config_name", "repetition",
               *CONFIG_FIELDS, "phase"]
 PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
@@ -137,18 +139,19 @@ def benchmark_results_text(output_dir):
     if not rows:
         return "No complete benchmark runs were recorded."
     dimensions = ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
-                  "rotate_root_moves")
+                  "rotate_root_moves", "cpu_binding")
     groups = {}
     for row in rows:
         key = (row["condition"], row["config_name"]) + tuple(
-            int(row.get(name) or 0) for name in dimensions)
+            row.get(name, "none") if name == "cpu_binding" else int(row.get(name) or 0)
+            for name in dimensions)
         group = groups.setdefault(key, {"wall": [], "nodes": [], "main_nodes": []})
         group["wall"].append(int(row["wall_ns"]) / 1e9)
         group["nodes"].append(int(row["nodes"]))
         group["main_nodes"].append(int(row["main_nodes"]))
     lines = [f"Completed benchmark runs: {len(rows)}.", "",
-             "| Build | Config | Bucket | Depth | Workers | TT MiB | Cap | Rotation | Mean wall s | Mean nodes | Mean main nodes |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "| Build | Config | Bucket | Depth | Workers | TT MiB | Cap | Rotation | Binding | Mean wall s | Mean nodes | Mean main nodes |",
+             "|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|"]
     for key, values in sorted(groups.items()):
         means = [sum(values[name]) / len(values[name])
                  for name in ("wall", "nodes", "main_nodes")]
@@ -168,7 +171,10 @@ def write_comparisons(output_dir):
     for row in rows:
         pairs.setdefault(row["comparison_id"], {})[row["condition"]] = row
     fields = ["comparison_id", "config_name", "repetition", "bucket_size", "depth", "threads", "hash_mb",
-              "cap_helpers", "rotate_root_moves", "baseline_run", "candidate_run",
+              "cap_helpers", "rotate_root_moves", "cpu_binding",
+              "baseline_applied_cpu_binding", "candidate_applied_cpu_binding",
+              "baseline_cpu_list", "candidate_cpu_list",
+              "baseline_run", "candidate_run",
               "baseline_wall_ns", "candidate_wall_ns", "speedup_baseline_over_candidate",
               "baseline_cpu_ns", "candidate_cpu_ns", "baseline_nodes", "candidate_nodes",
               "baseline_main_nodes", "candidate_main_nodes",
@@ -183,10 +189,12 @@ def write_comparisons(output_dir):
             baseline, candidate = pair["baseline"], pair["candidate"]
             row = {key: baseline[key] for key in (
                 "comparison_id", "config_name", "repetition", "bucket_size", "depth", "threads",
-                "hash_mb", "cap_helpers", "rotate_root_moves")}
+                "hash_mb", "cap_helpers", "rotate_root_moves", "cpu_binding")}
             for label, run in (("baseline", baseline), ("candidate", candidate)):
                 row[f"{label}_run"] = run["run"]
                 row[f"{label}_binary_sha256"] = run["binary_sha256"]
+                row[f"{label}_applied_cpu_binding"] = run.get("applied_cpu_binding", "none")
+                row[f"{label}_cpu_list"] = run.get("cpu_list", "none")
                 for metric in ("wall_ns", "cpu_ns", "nodes", "main_nodes"):
                     row[f"{label}_{metric}"] = run[metric]
             row["speedup_baseline_over_candidate"] = (
@@ -206,7 +214,7 @@ def write_position_comparisons(output_dir):
         pair = pairs.setdefault(row["comparison_id"], {"baseline": {}, "candidate": {}})
         pair[row["condition"]][row["position"]] = row
     fields = ["comparison_id", "config_name", "repetition", "bucket_size", "depth", "threads", "hash_mb",
-              "cap_helpers", "rotate_root_moves", "position", "baseline_wall_ns",
+              "cap_helpers", "rotate_root_moves", "cpu_binding", "position", "baseline_wall_ns",
               "candidate_wall_ns", "baseline_speedup_over_candidate", "baseline_nodes",
               "candidate_nodes", "baseline_cpu_ns", "candidate_cpu_ns",
               "baseline_main_nodes", "candidate_main_nodes",
@@ -224,7 +232,7 @@ def write_position_comparisons(output_dir):
                 left, right = baseline[position], candidate[position]
                 row = {key: left[key] for key in (
                     "comparison_id", "config_name", "repetition", "bucket_size", "depth", "threads",
-                    "hash_mb", "cap_helpers", "rotate_root_moves", "position")}
+                    "hash_mb", "cap_helpers", "rotate_root_moves", "cpu_binding", "position")}
                 for label, source in (("baseline", left), ("candidate", right)):
                     for metric in ("wall_ns", "cpu_ns", "nodes", "main_nodes",
                                    "bestmove", "score_type", "score"):
@@ -262,8 +270,58 @@ def validate_configuration(config):
             raise ValueError(f"Invalid {name}: {value!r}")
     if config["bucket_size"] not in (1, 2, 4, 8):
         raise ValueError("bucket_size supports only 1, 2, 4, 8")
+    if config["cpu_binding"] not in ("none", "physical"):
+        raise ValueError("cpu_binding must be 'none' or 'physical'")
+    if config["cpu_binding"] == "physical" and not sys.platform.startswith("linux"):
+        raise ValueError("cpu_binding='physical' is supported only on Linux")
     if sys.platform.startswith("linux") and config["hash_mb"] % 2:
         raise ValueError("hash_mb must be even on Linux")
+
+
+def physical_core_cpu_ids():
+    """Return one allowed Linux logical CPU for each physical core."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "sched_getaffinity"):
+        raise ValueError("physical CPU binding requires Linux sched_getaffinity support")
+    allowed = sorted(os.sched_getaffinity(0))
+    if not allowed:
+        raise ValueError("The current process has no allowed CPUs")
+    cores = {}
+    for cpu in allowed:
+        topology = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology")
+        try:
+            package = int((topology / "physical_package_id").read_text().strip())
+            core = int((topology / "core_id").read_text().strip())
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Cannot read Linux core topology for CPU {cpu}: {error}") from error
+        if package < 0 or core < 0:
+            raise ValueError(f"Linux reports invalid physical-core topology for CPU {cpu}")
+        cores.setdefault((package, core), cpu)
+    cpu_ids = [cores[key] for key in sorted(cores)]
+    if any(cpu >= 1024 for cpu in cpu_ids):
+        raise ValueError("CPU IDs >= 1024 are unsupported by the current affinity implementation")
+    return cpu_ids
+
+
+def resolve_cpu_binding(plan):
+    """Preflight the requested physical-core bindings and return their CPU map."""
+    requested = [run["threads"] for run in plan if run["cpu_binding"] == "physical"]
+    if not requested:
+        return []
+    cpu_ids = physical_core_cpu_ids()
+    needed = max(requested)
+    if needed > len(cpu_ids):
+        raise ValueError(f"Physical binding needs {needed} cores, but only {len(cpu_ids)} are allowed")
+    return cpu_ids
+
+
+def worker_environment(run, physical_cpu_ids):
+    """Set the private candidate-engine affinity map for this process only."""
+    environment = os.environ.copy()
+    environment.pop("WEISS_CPU_LIST", None)
+    if run.get("cpu_binding") == "physical":
+        environment["WEISS_CPU_LIST"] = ",".join(
+            str(cpu) for cpu in physical_cpu_ids[:run["threads"]])
+    return environment
 
 
 def make_plan(*, extra_runs=None, repetitions=None):
@@ -355,12 +413,12 @@ def validate_paired_plan(plan):
     return groups
 
 
-def parse_result(path, expected):
+def parse_result(path, expected, physical_cpu_ids=None):
     """Accept only a complete, internally consistent log for the requested run."""
     configs, headers, positions, totals, overall = [], [], [], [], []
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("BENCH_CONFIG "):
-            configs.append(dict(re.findall(r"(\w+)=(\d+)", line)))
+            configs.append(dict(re.findall(r"(\w+)=([^\s]+)", line)))
         elif line.startswith("BENCH_POSITION_HEADER,"):
             headers.append(next(csv.reader([line]))[1:])
         elif line.startswith("BENCH_POSITION,"):
@@ -378,12 +436,30 @@ def parse_result(path, expected):
             overall.append(tuple(map(int, match.groups())))
     if len(configs) != 1 or headers != [POSITION_FIELDS] or len(totals) != 1 or len(overall) != 1:
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
-    config = {key: int(value) for key, value in configs[0].items()}
+    string_fields = {"cpu_binding", "cpu_list"}
+    config = {key: (value if key in string_fields else int(value))
+              for key, value in configs[0].items()}
     config.setdefault("rotate_root_moves", 0)  # Older benchmark logs used the unrotated order.
+    config.setdefault("cpu_binding", "none")
+    config.setdefault("cpu_list", "none")
     if not {"bucket_size", "depth", "threads", "hash_mb", "entry_bytes", "bucket_bytes", "buckets", "cap_helpers", "rotate_root_moves"} <= config.keys():
         raise ValueError(f"Missing benchmark configuration fields in {path}")
     if any(config.get(key) != expected.get(key, 0) for key in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves")):
         raise ValueError(f"Benchmark configuration differs from requested run in {path}")
+    requested_binding = expected.get("cpu_binding", "none")
+    applied_binding = config["cpu_binding"]
+    expected_modes = ({"none"} if requested_binding == "none" else
+                      {"physical"} if expected.get("condition") == "candidate" else
+                      {"none", "physical"})
+    if applied_binding not in expected_modes:
+        raise ValueError(f"Engine applied CPU binding {applied_binding!r} unexpectedly in {path}")
+    expected_cpu_list = "none"
+    if applied_binding == "physical":
+        if physical_cpu_ids is None or len(physical_cpu_ids) < expected["threads"]:
+            raise ValueError("Missing physical CPU map for a bound benchmark run")
+        expected_cpu_list = ",".join(str(cpu) for cpu in physical_cpu_ids[:expected["threads"]])
+    if config["cpu_list"] != expected_cpu_list:
+        raise ValueError(f"Engine CPU list differs from the requested binding in {path}")
     if config["bucket_bytes"] != config["bucket_size"] * config["entry_bytes"] or (
             config["buckets"] * config["bucket_bytes"] != config["hash_mb"] * 1024 * 1024):
         raise ValueError(f"Inconsistent TT layout in {path}")
@@ -419,6 +495,7 @@ def parse_result(path, expected):
         helper_max_completed_iteration=max(row["helper_max_completed_iteration"] for row in positions))
     summary.update(elapsed_ms=elapsed_ms, nps=nps,
                    **{key: config[key] for key in ("entry_bytes", "bucket_bytes", "buckets")})
+    summary.update(applied_cpu_binding=applied_binding, cpu_list=config["cpu_list"])
     return summary, positions
 
 
@@ -456,7 +533,7 @@ def bench_command(run, binary):
     return command
 
 
-def record_metadata(output_dir, deadline=None):
+def record_metadata(output_dir, deadline=None, physical_cpu_ids=None):
     commit = capture(["git", "rev-parse", "HEAD"], required=True)
     status = capture(["git", "status", "--short"], required=True)
     patch = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
@@ -471,7 +548,9 @@ def record_metadata(output_dir, deadline=None):
                f"timeout_seconds: {TIMEOUT_SECONDS}",
                f"total_budget_seconds_at_metadata: {None if deadline is None else max(0, deadline - time.monotonic())}",
                f"allowed_cpus: {sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else 'unavailable'}",
-               "placement: inherited from invoking shell/scheduler; no per-worker pinning"]
+               f"physical_core_cpu_map: {physical_cpu_ids or 'not requested'}",
+               ("placement: candidate workers use one CPU per physical core; reference source remains unpinned"
+                if physical_cpu_ids else "placement: inherited from shell or scheduler; no per-worker binding requested")]
     for command in ([*shlex.split(CC), "--version"], ["make", "--version"], ["lscpu"],
                     ["numactl", "--show"], ["numactl", "--hardware"]):
         details.append(f"\n$ {shlex.join(command)}\n{capture(command)}")
@@ -500,10 +579,10 @@ def budget_timeout(deadline, per_run_limit=None):
     return min(remaining, per_run_limit) if per_run_limit is not None else remaining
 
 
-def run_command(command, file, timeout):
+def run_command(command, file, timeout, env=None):
     """On timeout/interrupt, also stop compiler children rather than leaving jobs behind."""
     process = subprocess.Popen(command, cwd=ROOT, stdout=file, stderr=subprocess.STDOUT,
-                               start_new_session=os.name == "posix")
+                               start_new_session=os.name == "posix", env=env)
     try:
         code = process.wait(timeout=timeout)
     except BaseException:
@@ -567,7 +646,8 @@ def run_selfplay_smoke(output_dir, baseline_binary, candidate_binary, deadline):
         shlex.join(command) + "\n", encoding="utf-8")
     status_path.write_text("running\n", encoding="utf-8")
     with (Path(output_dir) / "selfplay.log").open("w", encoding="utf-8") as log:
-        run_command(command, log, budget_timeout(deadline, 1800))
+        run_command(command, log, budget_timeout(deadline, 1800),
+                    env=worker_environment({"cpu_binding": "none"}, []))
     games = pgn_result_headers(pgn_path) if pgn_path.exists() else []
     candidate_name, baseline_name = "Weiss candidate", "Weiss baseline"
     wins = draws = losses = 0
@@ -616,7 +696,9 @@ def run_selfplay_smoke(output_dir, baseline_binary, candidate_binary, deadline):
     return f"completed {completed} games; smoke test only"
 
 
-def execute(plan, output_dir, deadline=None):
+def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
+    if physical_cpu_ids is None:
+        physical_cpu_ids = resolve_cpu_binding(plan)
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "raw").mkdir()
     (output_dir / "bin").mkdir()
@@ -638,6 +720,8 @@ def execute(plan, output_dir, deadline=None):
             "TT sizes (MiB)": sorted({run["hash_mb"] for run in plan}),
             "Helper caps": sorted({run["cap_helpers"] for run in plan}),
             "Root move rotation": sorted({run["rotate_root_moves"] for run in plan}),
+            "CPU binding modes": sorted({run["cpu_binding"] for run in plan}),
+            "Physical core CPU map": physical_cpu_ids or "not requested",
             "Repetitions": sorted({run["repetition"] for run in plan}),
             "Timeout": TIMEOUT_SECONDS,
             "Time budget (hours)": TIME_BUDGET_HOURS,
@@ -657,7 +741,8 @@ def execute(plan, output_dir, deadline=None):
                 "Each pair uses one build from the pinned baseline source and one from the current checkout.",
                 f"Pair order is randomized with seed {ORDER_SEED}; searches run sequentially.",
                 "A short color-swapped self-play smoke check runs after benchmark pairs; Cute Chess CLI is required before the run starts.",
-                "CPU and NUMA placement are inherited from the invoking shell or scheduler.",
+                "Physical binding pins candidate workers only; the pinned reference source does not contain this feature and remains unpinned.",
+                "CPU IDs come from the process's allowed cpuset and Linux physical-core topology; NUMA placement is otherwise unchanged.",
             ],
             source_commit=source["commit"], source_status=source["status"],
             binaries=built_binaries, status=state,
@@ -671,7 +756,7 @@ def execute(plan, output_dir, deadline=None):
         )
 
     try:
-        source.update(record_metadata(output_dir, deadline) or {})
+        source.update(record_metadata(output_dir, deadline, physical_cpu_ids) or {})
         update_record("building")
         with (output_dir / "plan.csv").open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=RUN_FIELDS)
@@ -708,7 +793,7 @@ def execute(plan, output_dir, deadline=None):
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
                           "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
                           "helper_nodes_beyond_depth", "helper_max_started_iteration",
-                          "helper_max_completed_iteration"]
+                          "helper_max_completed_iteration", "applied_cpu_binding", "cpu_list"]
         with (output_dir / "runs.csv").open("w", newline="") as run_file, (
                 output_dir / "positions.csv").open("w", newline="") as position_file:
             runs = csv.DictWriter(run_file, fieldnames=RUN_FIELDS + ["started_utc", "finished_utc"]
@@ -725,14 +810,18 @@ def execute(plan, output_dir, deadline=None):
                 command = bench_command(run, binary)
                 raw = output_dir / "raw" / f"run-{run['run']:04d}.log"
                 status.write_text(f"running {run['run']} of {len(plan)}\n")
-                print(f"[{run['run']}/{len(plan)}] {run['condition']} {shlex.join(command)}", flush=True)
+                applied_binding = ("none" if run["condition"] == "baseline"
+                                   else run["cpu_binding"])
+                print(f"[{run['run']}/{len(plan)}] {run['condition']} "
+                      f"cpu_binding={applied_binding} {shlex.join(command)}", flush=True)
                 started = utc_now()
                 process_start = time.monotonic_ns()
                 with raw.open("w") as file:
-                    run_command(command, file, budget_timeout(deadline, TIMEOUT_SECONDS))
+                    run_command(command, file, budget_timeout(deadline, TIMEOUT_SECONDS),
+                                env=worker_environment(run, physical_cpu_ids))
                 finished = utc_now()
                 process_wall_ns = time.monotonic_ns() - process_start
-                summary, rows = parse_result(raw, run)
+                summary, rows = parse_result(raw, run, physical_cpu_ids)
                 summary["process_wall_ns"] = process_wall_ns
                 provenance = dict(binary_sha256=digest, raw_log=str(raw.relative_to(output_dir)))
                 positions.writerows({**run, **row, **provenance} for row in rows)
@@ -782,6 +871,7 @@ def main():
         raise ValueError("TIME_BUDGET_HOURS must be positive and at most 24 hours")
     plan = make_experiment_plan()
     validate_paired_plan(plan)
+    physical_cpu_ids = resolve_cpu_binding(plan)
     build_specs = {(run["condition"], run["bucket_size"], run["cap_helpers"])
                    for run in plan}
     if SELFPLAY_ENABLED:
@@ -794,6 +884,11 @@ def main():
     print(f"Budget: {TIME_BUDGET_HOURS:g} h; per-benchmark timeout: {TIMEOUT_SECONDS} s.")
     print("Stops at the first timeout or budget limit. Complete 50-position benchmarks are saved; "
           "the final configuration block may be incomplete.")
+    if physical_cpu_ids:
+        requested_threads = max(run["threads"] for run in plan
+                                if run["cpu_binding"] == "physical")
+        print(f"Physical-core binding: {len(physical_cpu_ids)} available cores; "
+              f"using CPU IDs {physical_cpu_ids[:requested_threads]} for up to {requested_threads} workers.")
     if args.dry_run:
         for condition, bucket, cap in sorted(build_specs):
             binary = Path('<run-directory>') / 'bin' / condition / f'weiss-b{bucket}-cap{cap}'
@@ -805,6 +900,7 @@ def main():
                       / f"weiss-b{run['bucket_size']}-cap{run['cap_helpers']}")
             print(f"run={run['run']} config={run['config_name']} pair={run['comparison_id']} "
                   f"condition={run['condition']} repetition={run['repetition']} "
+                  f"cpu_binding={'none' if run['condition'] == 'baseline' else run['cpu_binding']} "
                   + shlex.join(bench_command(run, binary)))
         if SELFPLAY_ENABLED:
             print(f"after benchmarks: {SELFPLAY_GAMES}-game color-swapped self-play smoke; "
@@ -828,7 +924,7 @@ def main():
     output_dir = experiment_directory(ROOT / "results" / "experiments", EXPERIMENT_SLUG)
     deadline = time.monotonic() + TIME_BUDGET_HOURS * 3600
     try:
-        execute(plan, output_dir, deadline)
+        execute(plan, output_dir, deadline, physical_cpu_ids)
     except (BudgetExpired, subprocess.TimeoutExpired):
         print("Time limit reached. Completed benchmarks remain in runs.csv/positions.csv; "
               "unfinished runs are excluded from the CSVs, and their logs are retained.", flush=True)

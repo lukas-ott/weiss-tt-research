@@ -16,11 +16,21 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+
+#ifdef __linux__
+#include <limits.h>
+#include <sched.h>
+#endif
 
 #include "movegen.h"
 #include "threads.h"
@@ -32,6 +42,109 @@ static pthread_t *pthreads;
 // Used for letting the main thread sleep without using cpu
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sleepCondition = PTHREAD_COND_INITIALIZER;
+static void CheckThreadCall(int error, const char *operation);
+
+#ifdef __linux__
+static int *workerCPUs;
+static int workerCPUCount;
+
+static void FailCPUBinding(const char *message) {
+    fprintf(stderr, "CPU binding failed: %s\n", message);
+    exit(EXIT_FAILURE);
+}
+
+static void ReadWorkerCPUs(int threadCount) {
+    free(workerCPUs);
+    workerCPUs = NULL;
+    workerCPUCount = 0;
+
+    const char *list = getenv("WEISS_CPU_LIST");
+    if (!list || !*list) return;
+
+    const char *cursor = list;
+    while (*cursor) {
+        errno = 0;
+        char *end;
+        long cpu = strtol(cursor, &end, 10);
+        if (errno || end == cursor || cpu < 0 || cpu >= CPU_SETSIZE
+                || (*end && *end != ','))
+            FailCPUBinding("WEISS_CPU_LIST must be a comma-separated list of valid CPU IDs");
+
+        for (int i = 0; i < workerCPUCount; ++i)
+            if (workerCPUs[i] == cpu)
+                FailCPUBinding("WEISS_CPU_LIST contains a duplicate CPU ID");
+
+        int *newList = realloc(workerCPUs, (size_t)(workerCPUCount + 1) * sizeof(*workerCPUs));
+        if (!newList) FailCPUBinding("could not allocate the CPU map");
+        workerCPUs = newList;
+        workerCPUs[workerCPUCount++] = (int)cpu;
+
+        if (*end == ',') {
+            cursor = end + 1;
+            if (!*cursor) FailCPUBinding("WEISS_CPU_LIST has a trailing comma");
+        } else {
+            cursor = end;
+        }
+    }
+
+    if (workerCPUCount < threadCount)
+        FailCPUBinding("the CPU map has fewer CPUs than the requested worker count");
+
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0)
+        FailCPUBinding("could not read the process's allowed CPU set");
+    for (int i = 0; i < workerCPUCount; ++i)
+        if (!CPU_ISSET(workerCPUs[i], &allowed))
+            FailCPUBinding("WEISS_CPU_LIST includes a CPU outside the process's allowed CPU set");
+}
+#else
+static void ReadWorkerCPUs(int threadCount) {
+    (void)threadCount;
+    const char *list = getenv("WEISS_CPU_LIST");
+    if (list && *list) {
+        fprintf(stderr, "CPU binding failed: WEISS_CPU_LIST is supported only on Linux.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+#endif
+
+static void CreateWorker(int index, void *(*func)(void *), void *argument) {
+#ifdef __linux__
+    if (workerCPUCount) {
+        pthread_attr_t attributes;
+        CheckThreadCall(pthread_attr_init(&attributes), "pthread_attr_init");
+        cpu_set_t selected;
+        CPU_ZERO(&selected);
+        CPU_SET(workerCPUs[index], &selected);
+        CheckThreadCall(pthread_attr_setaffinity_np(&attributes, sizeof(selected), &selected),
+                        "pthread_attr_setaffinity_np");
+        int createError = pthread_create(&pthreads[index], &attributes, func, argument);
+        int destroyError = pthread_attr_destroy(&attributes);
+        CheckThreadCall(createError, "pthread_create");
+        CheckThreadCall(destroyError, "pthread_attr_destroy");
+        return;
+    }
+#endif
+    CheckThreadCall(pthread_create(&pthreads[index], NULL, func, argument), "pthread_create");
+}
+
+bool ThreadBindingEnabled(void) {
+#ifdef __linux__
+    return workerCPUCount > 0;
+#else
+    return false;
+#endif
+}
+
+int ThreadCPUForIndex(int index) {
+#ifdef __linux__
+    return index >= 0 && index < workerCPUCount ? workerCPUs[index] : -1;
+#else
+    (void)index;
+    return -1;
+#endif
+}
 
 
 // A failed worker launch must fail the run, not masquerade as a scaling result.
@@ -55,6 +168,8 @@ void InitThreads(int count) {
         fprintf(stderr, "Failed to allocate state for %d threads.\n", count);
         exit(EXIT_FAILURE);
     }
+
+    ReadWorkerCPUs(count);
 
     // Each thread knows its own index and total thread count
     for (int i = 0; i < count; ++i)
@@ -129,7 +244,7 @@ void PrepareSearch(Position *pos, Move searchmoves[]) {
 
 // Start the main thread running the provided function
 void StartMainThread(void *(*func)(void *), Position *pos) {
-    CheckThreadCall(pthread_create(&pthreads[0], NULL, func, pos), "pthread_create");
+    CreateWorker(0, func, pos);
     CheckThreadCall(pthread_detach(pthreads[0]), "pthread_detach");
 }
 
@@ -139,7 +254,7 @@ static bool helpersActive = false;
 void StartHelpers(void *(*func)(void *)) {
     helpersActive = true;
     for (int i = 1; i < Threads->count; ++i)
-        CheckThreadCall(pthread_create(&pthreads[i], NULL, func, &Threads[i]), "pthread_create");
+        CreateWorker(i, func, &Threads[i]);
 }
 
 // Wait for helper threads to finish
@@ -167,7 +282,7 @@ void ResetThreads() {
 // Run the given function once in each thread
 void RunWithAllThreads(void *(*func)(void *)) {
     for (int i = 0; i < Threads->count; ++i)
-        CheckThreadCall(pthread_create(&pthreads[i], NULL, func, &Threads[i]), "pthread_create");
+        CreateWorker(i, func, &Threads[i]);
     for (int i = 0; i < Threads->count; ++i)
         CheckThreadCall(pthread_join(pthreads[i], NULL), "pthread_join");
 }
