@@ -231,6 +231,8 @@ INLINE int MateScore(const int score) {
 // Print thinking
 void PrintThinking(const Thread *thread, int alpha, int beta) {
 
+    if (BenchmarkRunning) return;
+
     const Position *pos = &thread->pos;
 
     TimePoint elapsed = TimeSince(Limits.start);
@@ -282,6 +284,7 @@ void PrintThinking(const Thread *thread, int alpha, int beta) {
 
 // Print conclusion of search
 void PrintBestMove(Move move) {
+    if (BenchmarkRunning) return;
     printf("bestmove %s\n", MoveToStr(move));
     fflush(stdout);
 }

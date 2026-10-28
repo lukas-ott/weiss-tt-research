@@ -22,6 +22,9 @@
 #include "types.h"
 
 
+// Set before benchmark workers start; suppress UCI output inside the timed search.
+extern bool BenchmarkRunning;
+
 void Benchmark(int argc, char **argv);
 
 #ifdef DEV

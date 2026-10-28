@@ -85,3 +85,10 @@ dkms.conf
 # Temporary files
 *.tmp
 *.log
+
+# Generated experiment bundles (back up the whole directory separately)
+/results/experiments/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

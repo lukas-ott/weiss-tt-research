@@ -20,7 +20,10 @@
 EXE    = weiss
 SRC    = *.c pyrrhic/tbprobe.c tuner/*.c query/*.c noobprobe/*.c onlinesyzygy/*.c
 CC     = gcc
-BUCKET_SIZE ?= 2
+
+# Bucket layout is a build setting; benchmark depth, threads and TT MiB are runtime arguments.
+# The default bucket size lives in transposition.h; CPPFLAGS also supports a direct -D.
+BUCKET_FLAGS = $(if $(BUCKET_SIZE),-DBUCKET_SIZE=$(BUCKET_SIZE))
 
 # Defines
 POPCNT = -msse3 -mpopcnt
@@ -41,7 +44,7 @@ WARN   = -Wall -Wextra -Wshadow -Werror -Wmissing-declarations -Wno-invalid-feat
 NDEBUG = -DNDEBUG
 
 FLAGS  = $(STD) $(WARN) -O3 -flto=auto
-CFLAGS = $(FLAGS) -march=native $(GIT_HEAD_COMMIT_ID_DEF) -DBUCKET_SIZE=$(BUCKET_SIZE)
+CFLAGS = $(FLAGS) -march=native $(GIT_HEAD_COMMIT_ID_DEF)
 RFLAGS = $(FLAGS) -static
 
 # Use pext if supported and not a ryzen 1/2 cpu
@@ -81,8 +84,8 @@ ifeq ($(OS), Windows_NT)
 endif
 
 # Compilations
-BASIC   = $(CC) $(CFLAGS) $(NDEBUG) $(SRC) $(LIBS) -o $(EXE)
-RELEASE = $(CC) $(RFLAGS) $(NDEBUG) $(SRC) $(LIBS) -o $(EXE)
+BASIC   = $(CC) $(CPPFLAGS) $(BUCKET_FLAGS) $(CFLAGS) $(NDEBUG) $(SRC) $(LIBS) -o $(EXE)
+RELEASE = $(CC) $(CPPFLAGS) $(BUCKET_FLAGS) $(RFLAGS) $(NDEBUG) $(SRC) $(LIBS) -o $(EXE)
 
 # Targets
 pgo: clean

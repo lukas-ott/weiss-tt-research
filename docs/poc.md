@@ -15,20 +15,18 @@
 - Hash: 64 MB
 - Recorded run source commit: `0d04458a487e27edbc6bcc0c62623c7bccaec96b`
 
-## Reproducing benchmark runs
+## Historical runner and current setup
 
-Run `python3 scripts/run_poc.py` from the repository root. The default is depth
-12, 64 MB, five repetitions, and 1, 2, 4, and 8 threads for both TT layouts.
-For a short smoke test that also varies the hash budget, run:
+These results were recorded with `scripts/run_poc.py` at source commit
+`0d04458a487e27edbc6bcc0c62623c7bccaec96b`. That runner is preserved in Git history.
+The current replacement is [`scripts/run_experiments.py`](../scripts/run_experiments.py);
+see the [experiment guide](experiments.md).
 
-```bash
-python3 scripts/run_poc.py --threads 1 4 --hash-mb 16 64 --repetitions 2
-```
-
-The runner creates a new `results/poc/runs/<timestamp>/` directory containing
-`runs.csv`, `run-info.txt`, build logs, and raw benchmark logs. Each CSV row
-contains the relative path to its raw log. Raw `.log` files are ignored by Git,
-so retain or share them separately if the exact run output needs to be audited.
+The original `runs.csv`, metadata and available raw logs remain under
+`results/poc/runs/`. Raw logs were ignored by Git and must be retained separately.
+The current engine suppresses thinking output during timing and uses more precise
+clocks, so collect a fresh baseline rather than mixing these historical timings
+with new runs.
 
 ## Thread-scaling observations
 

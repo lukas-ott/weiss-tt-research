@@ -18,6 +18,7 @@
 
 #include <pthread.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,6 +34,14 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sleepCondition = PTHREAD_COND_INITIALIZER;
 
 
+// A failed worker launch must fail the run, not masquerade as a scaling result.
+static void CheckThreadCall(int error, const char *operation) {
+    if (error) {
+        fprintf(stderr, "%s failed: %s\n", operation, strerror(error));
+        exit(EXIT_FAILURE);
+    }
+}
+
 // Allocates memory for thread structs
 void InitThreads(int count) {
 
@@ -41,6 +50,11 @@ void InitThreads(int count) {
 
     Threads  = calloc(count, sizeof(Thread));
     pthreads = calloc(count, sizeof(pthread_t));
+
+    if (!Threads || !pthreads) {
+        fprintf(stderr, "Failed to allocate state for %d threads.\n", count);
+        exit(EXIT_FAILURE);
+    }
 
     // Each thread knows its own index and total thread count
     for (int i = 0; i < count; ++i)
@@ -115,8 +129,8 @@ void PrepareSearch(Position *pos, Move searchmoves[]) {
 
 // Start the main thread running the provided function
 void StartMainThread(void *(*func)(void *), Position *pos) {
-    pthread_create(&pthreads[0], NULL, func, pos);
-    pthread_detach(pthreads[0]);
+    CheckThreadCall(pthread_create(&pthreads[0], NULL, func, pos), "pthread_create");
+    CheckThreadCall(pthread_detach(pthreads[0]), "pthread_detach");
 }
 
 static bool helpersActive = false;
@@ -125,14 +139,14 @@ static bool helpersActive = false;
 void StartHelpers(void *(*func)(void *)) {
     helpersActive = true;
     for (int i = 1; i < Threads->count; ++i)
-        pthread_create(&pthreads[i], NULL, func, &Threads[i]);
+        CheckThreadCall(pthread_create(&pthreads[i], NULL, func, &Threads[i]), "pthread_create");
 }
 
 // Wait for helper threads to finish
 void WaitForHelpers() {
     if (!helpersActive) return;
     for (int i = 1; i < Threads->count; ++i)
-        pthread_join(pthreads[i], NULL);
+        CheckThreadCall(pthread_join(pthreads[i], NULL), "pthread_join");
     helpersActive = false;
 }
 
@@ -153,9 +167,9 @@ void ResetThreads() {
 // Run the given function once in each thread
 void RunWithAllThreads(void *(*func)(void *)) {
     for (int i = 0; i < Threads->count; ++i)
-        pthread_create(&pthreads[i], NULL, func, &Threads[i]);
+        CheckThreadCall(pthread_create(&pthreads[i], NULL, func, &Threads[i]), "pthread_create");
     for (int i = 0; i < Threads->count; ++i)
-        pthread_join(pthreads[i], NULL);
+        CheckThreadCall(pthread_join(pthreads[i], NULL), "pthread_join");
 }
 
 // Thread sleeps until it is woken up

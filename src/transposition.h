@@ -32,13 +32,12 @@
 #define BUCKET_SIZE 2
 #endif
 
-#if BUCKET_SIZE != 1 && BUCKET_SIZE != 2
-#error "BUCKET_SIZE must be 1 or 2"
+#if BUCKET_SIZE != 1 && BUCKET_SIZE != 2 && BUCKET_SIZE != 4 && BUCKET_SIZE != 8
+#error "BUCKET_SIZE must be 1, 2, 4, or 8"
 #endif
 
 #define ValidBound(bound) (bound >= BOUND_UPPER && bound <= BOUND_EXACT)
 #define ValidScore(score) (score >= -MATE && score <= MATE)
-
 
 enum { BOUND_NONE, BOUND_UPPER, BOUND_LOWER, BOUND_EXACT };
 

@@ -16,6 +16,7 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -86,65 +87,117 @@ static const char *BenchmarkFENs[] = {
     "2r2b2/5p2/5k2/p1r1pP2/P2pB3/1P3P2/K1P3R1/7R w - - 23 93",
 };
 
+bool BenchmarkRunning = false;
+
 typedef struct BenchResult {
-    TimePoint elapsed;
-    uint64_t nodes;
-    int score;
+    uint64_t wallNS, cpuNS;
+    uint64_t nodes, mainNodes;
+    int score, depth;
     Move best;
 } BenchResult;
 
+// Reject malformed settings rather than silently searching a different workload.
+static int BenchArgument(const char *text, const char *name, int minimum, int maximum) {
+    char *end;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno || end == text || *end || value < minimum || value > maximum) {
+        fprintf(stderr, "Invalid benchmark %s: '%s' (expected %d..%d)\n",
+                name, text, minimum, maximum);
+        exit(EXIT_FAILURE);
+    }
+    return (int)value;
+}
+
+static uint64_t BenchClock(clockid_t clock) {
+    struct timespec timestamp;
+    if (clock_gettime(clock, &timestamp) != 0) {
+        perror("benchmark clock_gettime");
+        exit(EXIT_FAILURE);
+    }
+    return (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + timestamp.tv_nsec;
+}
+
 void Benchmark(int argc, char **argv) {
 
-    // Default depth 16, 1 thread, and 32MB hash
-    Limits.depth     = argc > 2 ? atoi(argv[2]) : 14;
-    int threadCount  = argc > 3 ? atoi(argv[3]) : 1;
-    TT.requestedMB   = argc > 4 ? atoi(argv[4]) : HASH_DEFAULT;
+    if (argc > 5) {
+        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb]]]\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    // Runtime parameters; omitted arguments retain the original benchmark defaults.
+    Limits.depth = argc > 2 ? BenchArgument(argv[2], "depth", 1, MAX_PLY) : 14;
+    int threadCount = argc > 3 ? BenchArgument(argv[3], "threads", 1, 2048) : 1;
+    TT.requestedMB = argc > 4 ? BenchArgument(argv[4], "hash_mb", HASH_MIN, HASH_MAX) : HASH_DEFAULT;
+#if defined(__linux__)
+    if (TT.requestedMB % 2 != 0) {
+        fprintf(stderr, "Benchmark hash_mb must be even for Linux's 2 MiB aligned allocation.\n");
+        exit(EXIT_FAILURE);
+    }
+#endif
 
     Position pos;
+    BenchmarkRunning = true;
     InitThreads(threadCount);
     InitTT();
 
     int FENCount = sizeof(BenchmarkFENs) / sizeof(char *);
-    BenchResult results[FENCount];
-    TimePoint totalElapsed = 1; // Avoid possible div/0
-    uint64_t totalNodes = 0;
+    uint64_t totalWallNS = 0, totalCpuNS = 0, totalNodes = 0;
 
+    printf("BENCH_CONFIG depth=%d threads=%d hash_mb=%" PRIu64
+           " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64 "\n",
+           Limits.depth, threadCount, TT.currentMB, BUCKET_SIZE,
+           sizeof(TTEntry), sizeof(TTBucket), TT.count);
+
+    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score");
     for (int i = 0; i < FENCount; ++i) {
-
         printf("[# %2d] %s\n", i + 1, BenchmarkFENs[i]);
+        fflush(stdout);
 
-        // Search
+        // Preserve the original benchmark's position order and retained histories.
+        // TT allocation/clearing, FEN parsing and result printing are not timed.
         ParseFen(BenchmarkFENs[i], &pos);
         ABORT_SIGNAL = false;
         Limits.start = Now();
+        uint64_t wallStart = BenchClock(CLOCK_MONOTONIC);
+        uint64_t cpuStart = BenchClock(CLOCK_PROCESS_CPUTIME_ID);
         SearchPosition(&pos);
+        uint64_t cpuEnd = BenchClock(CLOCK_PROCESS_CPUTIME_ID);
+        uint64_t wallEnd = BenchClock(CLOCK_MONOTONIC);
 
-        // Collect results
-        BenchResult *r = &results[i];
-        r->elapsed = TimeSince(Limits.start);
-        r->nodes   = TotalNodes();
-        r->score   = Threads->rootMoves[0].score;
-        r->best    = Threads->rootMoves[0].move;
+        // Helpers have joined: node counters can now be read without active writers.
+        BenchResult result;
+        BenchResult *r = &result;
+        r->wallNS = wallEnd - wallStart;
+        r->cpuNS = cpuEnd - cpuStart;
+        r->nodes = TotalNodes();
+        r->mainNodes = Threads[0].pos.nodes;
+        r->depth = MIN(Threads[0].depth, Limits.depth);
+        r->score = Threads[0].rootMoves[0].score;
+        r->best = Threads[0].rootMoves[0].move;
 
-        totalElapsed += r->elapsed;
-        totalNodes   += r->nodes;
-
+        totalWallNS += r->wallNS;
+        totalCpuNS += r->cpuNS;
+        totalNodes += r->nodes;
         ClearTT();
+
+        // Emit each completed position immediately, outside the timed interval.
+        bool mate = isMate(r->score);
+        int distance = (MATE - abs(r->score) + 1) / 2;
+        int score = mate ? (r->score > 0 ? distance : -distance) : r->score;
+        printf("BENCH_POSITION,%d,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
+               ",%" PRIu64 ",%s,%s,%d,%d\n",
+               i + 1, r->depth, r->wallNS, r->cpuNS, r->mainNodes, r->nodes,
+               MoveToStr(r->best), mate ? "mate" : "cp", score, r->score);
+        fflush(stdout);
     }
+    printf("BENCH_TOTAL wall_ns=%" PRIu64 " cpu_ns=%" PRIu64 "\n", totalWallNS, totalCpuNS);
 
-    puts("======================================================");
-
-    for (int i = 0; i < FENCount; ++i) {
-        BenchResult *r = &results[i];
-        printf("[# %2d] %5d cp  %5s %10" PRIu64 " nodes %10d nps\n",
-               i+1, r->score, MoveToStr(r->best), r->nodes,
-               (int)(1000.0 * r->nodes / (r->elapsed + 1)));
-    }
-
-    puts("======================================================");
-
-    printf("OVERALL: %7" PRIi64 " ms %13" PRIu64 " nodes %10d nps\n",
-           totalElapsed, totalNodes, (int)(1000.0 * totalNodes / totalElapsed));
+    // Retain the existing runner's OVERALL format; precise time is above.
+    uint64_t elapsedMS = MAX(UINT64_C(1), totalWallNS / 1000000);
+    uint64_t nps = totalWallNS ? (uint64_t)(1e9 * totalNodes / totalWallNS) : 0;
+    printf("OVERALL: %7" PRIu64 " ms %13" PRIu64 " nodes %10" PRIu64 " nps\n",
+           elapsedMS, totalNodes, nps);
+    BenchmarkRunning = false;
 }
 
 #ifdef DEV
