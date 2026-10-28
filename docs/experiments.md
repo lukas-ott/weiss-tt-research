@@ -160,6 +160,48 @@ worker startup. No suitable depth or runtime budget has yet been calibrated on
 kiloampere. Use repetitions and inspect timing variation before making a scaling
 claim; the runner produces data rather than automatically claiming significance.
 
+## Analyze results with pandas
+
+Install the analysis dependency in your Python environment (Python 3.11+):
+
+```bash
+python -m pip install -r requirements-analysis.txt
+```
+
+In each script, edit `EXPERIMENT_DIR` near the top to point to one completed
+experiment folder. Then run these commands from the repository root:
+
+```bash
+python3 scripts/analyze_runs.py
+python3 scripts/analyze_positions.py
+```
+
+Both scripts print their summaries and write CSV files inside the experiment
+folder. Rerunning replaces the summaries; the original input files stay unchanged.
+
+- `run_summary.csv`: repetition count; wall runtime mean, median, minimum, maximum,
+  sample variance and standard deviation; mean CPU time, total nodes, main-worker
+  nodes and throughput. Throughput is the arithmetic mean of each run's nodes
+  divided by its wall runtime.
+- `position_summary.csv`: for each position and configuration, move frequencies,
+  distinct move count, centipawn and mate counts, and centipawn score mean, sample
+  variance and standard deviation. Mate results count toward move frequencies but
+  are excluded from score statistics, including when a group mixes score types.
+
+Configurations are separated by bucket size, depth, threads, TT MiB and executable
+SHA-256. Positions are also grouped by position ID. Do not combine experiment
+folders from different machines or placement settings.
+
+Wall runtime measures time to depth; CPU time accumulates across workers. Times
+are in seconds, runtime variance in seconds squared, evaluation in centipawns and
+score variance in centipawns squared. Sample variance divides by `n-1`; variance
+and standard deviation are blank when fewer than two relevant observations exist.
+For example, scores 10 and 30 cp have mean 20 cp and sample variance 200 cp squared.
+Move variability does not establish move correctness or playing strength.
+
+The experiment runner still uses only the Python standard library. Pandas is
+needed only for these analysis scripts.
+
 ## Test the runner without running chess searches
 
 ```bash

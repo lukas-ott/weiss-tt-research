@@ -1,0 +1,3 @@
+# Optional analysis environment only; Python >=3.11.
+# The experiment runner uses only the Python standard library.
+pandas==3.1.0
