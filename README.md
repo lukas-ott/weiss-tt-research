@@ -27,6 +27,19 @@ include per-position runtime, chosen move and score, plus complete raw logs and
 build/machine metadata. Generated experiment directories are ignored by Git and
 must be backed up separately.
 
+## Stockfish reference and comparison
+
+The [Stockfish 19 reference](results/stockfish19-reference-20261029/README.md)
+contains five candidate moves per benchmark position at depth 28, with evaluations
+and principal variations. It is a finite-depth reference, not proven ground truth.
+
+See the [kiloampere comparison](results/stockfish-comparison/kiloampere-20261028/README.md)
+for the eight thread configurations, score differences, move agreement, coverage
+and runtime. Derived summaries are tracked; raw server inputs remain local.
+To reproduce the analysis, point the marked settings block at your original Weiss
+experiment folder and run `python scripts/compare_stockfish.py` after installing
+`requirements-analysis.txt`. No chess searches are launched.
+
 ## Research context
 
 A transposition table stores information about positions that have already been

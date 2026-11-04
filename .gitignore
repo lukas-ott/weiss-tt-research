@@ -92,3 +92,10 @@ dkms.conf
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Local download bundle; the reference CSVs are tracked separately.
+/results/stockfish19-reference-20261029/*.zip
+
+# Private inputs and detailed raw-data export; publish analysis summaries only.
+/results/stockfish-comparison/kiloampere-20261028/input/
+/results/stockfish-comparison/kiloampere-20261028/observations.csv

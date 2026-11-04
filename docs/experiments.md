@@ -202,11 +202,44 @@ Move variability does not establish move correctness or playing strength.
 The experiment runner still uses only the Python standard library. Pandas is
 needed only for these analysis scripts.
 
+## Compare moves and scores with Stockfish
+
+The saved [Stockfish 19 reference](../results/stockfish19-reference-20261029/README.md)
+has five moves per benchmark position at nominal depth 28. To reproduce the
+included server comparison, use the same optional pandas environment:
+
+```bash
+python3 scripts/compare_stockfish.py
+```
+
+Edit `EXPERIMENT_DIR`, `REFERENCE_DIR`, `OUTPUT_DIR` and `NEAR_BEST_CP` in the marked
+settings block for another batch. The default input is the original kiloampere
+batch under `results/experiments/20261028T144854664254Z`; it must be available
+locally, or you must select its location. Raw server inputs are not uploaded to
+Git. Outputs are replaced on rerun; input CSVs are preserved.
+
+The script saves per-observation, per-position, per-repetition and per-configuration
+CSVs, a missing-move list, and a comparison restricted to positions scored across
+all configurations. Configurations/build hashes stay separate. Do not combine
+machines or experiments with different placement policies in one input folder.
+Position IDs must refer to the same original benchmark FENs; the script checks the
+saved reference against `src/tests.c` but cannot infer historical FENs from a new
+Weiss CSV that has no FEN column.
+
+Cross-engine score differences are numeric discrepancies: Weiss and Stockfish do
+not use identical evaluation scales. Move quality is estimated separately using
+Stockfish's score for its best move minus its score for the chosen Weiss move.
+Moves absent from the top five remain unscored. Mate distances are excluded from
+centipawn arithmetic. See the [comparison report](../results/stockfish-comparison/kiloampere-20261028/README.md)
+for formulas, denominators, findings and limitations.
+
 ## Test the runner without running chess searches
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-Tests use synthetic logs and fake build/engine commands. They do not compile Weiss,
-connect to a server, or launch real benchmark searches.
+Tests use synthetic logs/data and fake build/engine commands. They do not compile
+Weiss, connect to a server, or launch real benchmark searches. Runner tests use only
+the standard library. Stockfish-comparison tests use pandas and are skipped if it
+is not installed.

@@ -1,0 +1,27 @@
+setting,value
+engine,/opt/homebrew/Cellar/stockfish/19/bin/stockfish
+engine_sha256,dc2f18c34ae962dff591b66147d220ec06e61d756b93d8a4f5e04fd8e55c251f
+engine_compiler,"Stockfish 19 by the Stockfish developers (see AUTHORS file)
+
+Compiled by                : clang++ 21.0.0 on Apple
+Compilation architecture   : apple-silicon
+Compilation settings       : 64bit NEON_DOTPROD POPCNT
+Compiler __VERSION__ macro : Apple LLVM 21.0.0 (clang-2100.1.1.101)
+
+"
+depth,28
+threads,1
+hash_mb,512
+multipv,5
+parallel_independent_positions,2
+python,3.13.2
+platform,macOS-26.6.2-arm64-arm-64bit-Mach-O
+score_perspective,side to move; cp is Stockfish-normalized score; mate is signed moves
+fresh_process_per_position,True
+syzygy_path,empty (no tablebases)
+source_sha256,9bb4b581d8608b868324319ee243e0d65b700c7e749b451c3072199d69f01731
+runner_sha256,0e08477e588c0ab750b321877b33f36699d2ec547975ef2d8741189ac0bfd82c
+started_utc,2026-10-29T00:25:26.123235+00:00
+completed_utc,2026-10-29T00:52:28.672449+00:00
+release_url,https://github.com/official-stockfish/Stockfish/releases/tag/sf_19
+nnue_name,nn-1a298aa575a0.nnue
