@@ -38,7 +38,6 @@ BUCKET_SIZES = [2]           # allowed: 1, 2, 4, 8
 DEPTHS = [12]
 THREAD_COUNTS = [1, 2, 4, 8]
 HASH_SIZES_MB = [64]
-CAP_HELPERS = [0]          # 0: original; 1: cap helpers at requested depth
 REPETITIONS = 5
 ORDER_SEED = 2026
 CC = "gcc"
@@ -52,8 +51,8 @@ list is `[1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192]`. Only use counts permitted 
 your allocation. The runner rejects a count exceeding its Linux CPU-affinity mask;
 that check does not establish exclusivity or detect every scheduler CPU quota.
 
-Bucket size is compiled in; depth, total search-worker count, TT MiB and the
-helper-cap flag are runtime arguments. Linux TT sizes must be even and at least 2 MiB. `TIMEOUT_SECONDS`, when
+Bucket size is compiled in; depth, total search-worker count and TT MiB are runtime
+arguments. Linux TT sizes must be even and at least 2 MiB. `TIMEOUT_SECONDS`, when
 set, limits an entire 50-position benchmark process, not an individual position;
 a timed-out run is incomplete and is not added to the CSV results.
 
@@ -189,8 +188,8 @@ folder. Rerunning replaces the summaries; the original input files stay unchange
   variance and standard deviation. Mate results count toward move frequencies but
   are excluded from score statistics, including when a group mixes score types.
 
-Configurations are separated by bucket size, depth, threads, TT MiB, helper-cap
-mode and executable SHA-256. Older CSVs without the flag are treated as uncapped. Positions are also grouped by position ID. Do not combine experiment
+Configurations are separated by bucket size, depth, threads, TT MiB and executable
+SHA-256. Positions are also grouped by position ID. Do not combine experiment
 folders from different machines or placement settings.
 
 Wall runtime measures time to depth; CPU time accumulates across workers. Times
@@ -202,25 +201,6 @@ Move variability does not establish move correctness or playing strength.
 
 The experiment runner still uses only the Python standard library. Pandas is
 needed only for these analysis scripts.
-
-## Overnight helper-depth/depth/hash study
-
-See [the overnight guide](overnight.md) and `scripts/run_overnight.py` for the
-six-and-a-half-hour plan. It prioritizes repeated depth-15 controls, then uses
-separate timing pilots to choose deeper balanced batches. No merge into master is
-required to run the experimental branch.
-
-The benchmark accepts an optional final argument:
-
-```bash
-./src/weiss-bench bench 15 128 64 0  # original helper policy
-./src/weiss-bench bench 15 128 64 1  # helpers stop at nominal iteration 15
-```
-
-Outputs now record `cap_helpers`, helper iteration maxima and helper nodes beyond
-the requested iteration. Run CSVs also record `process_wall_ns`, including TT
-allocation/clearing and output. Existing `wall_ns`/`cpu_ns` measurement boundaries
-are unchanged. See the overnight guide for exact definitions and deadline handling.
 
 ## Compare moves and scores with Stockfish
 

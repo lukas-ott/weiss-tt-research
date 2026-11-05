@@ -723,11 +723,13 @@ static void *IterativeDeepening(void *voidThread) {
     int multiPV = MIN(Limits.multiPV, thread->rootMoveCount);
 
     // Iterative deepening
-    Depth depthLimit = mainThread || Limits.capHelpers ? Limits.depth : MAX_PLY;
+    Depth depthLimit = (mainThread || Limits.capHelpers) ? Limits.depth : MAX_PLY;
     while (++thread->depth <= depthLimit) {
 
         // Jump here and return if we run out of allocated time mid-search
         if (setjmp(thread->jumpBuffer)) break;
+
+        thread->startedDepth = thread->depth;
 
         // Search the position, once for each multi-pv
         for (thread->multiPV = 0; thread->multiPV < multiPV; ++thread->multiPV)

@@ -65,6 +65,7 @@ typedef struct Thread {
     jmp_buf jumpBuffer;
     uint64_t tbhits;
     Depth depth;
+    Depth startedDepth; // Last nominal iteration actually entered.
     Depth completedDepth;
     uint64_t nodesAtDepthLimit;
     bool doPruning;

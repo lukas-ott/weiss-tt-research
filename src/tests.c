@@ -32,6 +32,16 @@
 #include "transposition.h"
 
 
+// Benchmark-only switch: 0 keeps the original helper policy; 1 caps helpers at
+// the requested iterative-deepening depth. Edit this default or build with
+// CPPFLAGS=-DBENCH_CAP_HELPERS=1. Normal UCI searches keep the original policy.
+#ifndef BENCH_CAP_HELPERS
+#define BENCH_CAP_HELPERS 0
+#endif
+#if BENCH_CAP_HELPERS != 0 && BENCH_CAP_HELPERS != 1
+#error "BENCH_CAP_HELPERS must be 0 or 1"
+#endif
+
 /* Benchmark heavily inspired by Ethereal */
 
 static const char *BenchmarkFENs[] = {
@@ -120,14 +130,14 @@ static uint64_t BenchClock(clockid_t clock) {
 
 void Benchmark(int argc, char **argv) {
 
-    if (argc > 6) {
-        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb [cap_helpers]]]]\n", argv[0]);
+    if (argc > 5) {
+        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb]]]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
     // Runtime parameters; omitted arguments retain the original benchmark defaults.
     Limits.depth = argc > 2 ? BenchArgument(argv[2], "depth", 1, MAX_PLY) : 14;
     int threadCount = argc > 3 ? BenchArgument(argv[3], "threads", 1, 2048) : 1;
-    Limits.capHelpers = argc > 5 ? BenchArgument(argv[5], "cap_helpers", 0, 1) : false;
+    Limits.capHelpers = BENCH_CAP_HELPERS;
     TT.requestedMB = argc > 4 ? BenchArgument(argv[4], "hash_mb", HASH_MIN, HASH_MAX) : HASH_DEFAULT;
 #if defined(__linux__)
     if (TT.requestedMB % 2 != 0) {
@@ -180,8 +190,7 @@ void Benchmark(int argc, char **argv) {
         uint64_t helperBeyondNodes = 0;
         for (int t = 1; t < threadCount; ++t) {
             Thread *helper = &Threads[t];
-            int limit = Limits.capHelpers ? Limits.depth : MAX_PLY;
-            helperStarted = MAX(helperStarted, MIN(helper->depth, limit));
+            helperStarted = MAX(helperStarted, helper->startedDepth);
             helperCompleted = MAX(helperCompleted, helper->completedDepth);
             if (helper->completedDepth >= Limits.depth)
                 helperBeyondNodes += helper->pos.nodes - helper->nodesAtDepthLimit;

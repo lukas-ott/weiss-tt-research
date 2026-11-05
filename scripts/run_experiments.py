@@ -22,15 +22,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # ======================== EDIT EXPERIMENT SETTINGS HERE ========================
+# Run the baseline first, then the depth/hash sweep. Helpers keep their original policy.
 BUCKET_SIZES = [2]                 # Supported: 1, 2, 4, 8. One binary per size.
-DEPTHS = [12]
-THREAD_COUNTS = [1, 2, 4, 8]        # Server example: [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192]
+DEPTHS = [15]
+THREAD_COUNTS = [1, 2, 4, 8, 16, 32, 64, 128, 192]
 HASH_SIZES_MB = [64]                # MiB; even values on Linux, at least 2.
-CAP_HELPERS = [0]                  # 0: original; 1: helpers stop at requested depth.
-REPETITIONS = 5                    # Each combination is run this many times.
-ORDER_SEED = 2026                  # Reproducibly shuffle combinations per repetition.
-CC = "gcc"                        # Compiler used for every bucket variant.
-TIMEOUT_SECONDS = None             # Optional limit per complete 50-position bench.
+REPETITIONS = 30                   # Each combination is run this many times.
+ORDER_SEED = 2026                  # Shuffle configurations within each repetition.
+CC = "gcc"
+TIMEOUT_SECONDS = 300              # Whole 50-position process, including TT clearing; None disables.
+
+# Applies to every invocation. Completed runs are saved before the budget expires.
+TIME_BUDGET_HOURS = 6.5             # Includes builds and process startup/TT clearing.
+SWEEP_DEPTHS = list(range(15, 31))   # Ascending depths; [] skips this sweep.
+SWEEP_THREADS = [1, 32, 128, 192]
+SWEEP_HASH_SIZES_MB = [2, 64, 512]
+SWEEP_REPETITIONS = 5               # Sweep uses original, uncapped helpers only.
 # CPU/NUMA policy is inherited from your shell or scheduler; no automatic binding.
 # ==============================================================================
 
@@ -38,7 +45,7 @@ POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "node
                    "bestmove", "score_type", "score", "raw_score",
                    "helper_max_started_iteration", "helper_max_completed_iteration",
                    "helper_nodes_beyond_depth"]
-RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers"]
+RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "phase"]
 PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
 OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$")
 
@@ -60,36 +67,60 @@ def capture(command, required=False):
     return (result.stdout + result.stderr).strip()
 
 
-def make_plan():
-    dimensions = [("BUCKET_SIZES", BUCKET_SIZES, 1, 8), ("DEPTHS", DEPTHS, 1, 100),
-                  ("THREAD_COUNTS", THREAD_COUNTS, 1, 2048),
-                  ("HASH_SIZES_MB", HASH_SIZES_MB, 2, None),
-                  ("CAP_HELPERS", CAP_HELPERS, 0, 1)]
+def make_plan(*, buckets=None, depths=None, threads=None, hashes=None, caps=None,
+              repetitions=None, phase="baseline"):
+    buckets = BUCKET_SIZES if buckets is None else buckets
+    depths = DEPTHS if depths is None else depths
+    threads = THREAD_COUNTS if threads is None else threads
+    hashes = HASH_SIZES_MB if hashes is None else hashes
+    caps = [0] if caps is None else caps
+    repetitions = REPETITIONS if repetitions is None else repetitions
+    dimensions = [("BUCKET_SIZES", buckets, 1, 8), ("DEPTHS", depths, 1, 100),
+                  ("THREAD_COUNTS", threads, 1, 2048),
+                  ("HASH_SIZES_MB", hashes, 2, None), ("CAP_HELPERS", caps, 0, 1)]
     for name, values, minimum, maximum in dimensions:
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"{name} must be a nonempty list")
         if any(type(n) is not int or n < minimum or (maximum is not None and n > maximum)
                for n in values) or len(values) != len(set(values)):
             raise ValueError(f"Invalid or duplicate values in {name}")
-    if any(n not in (1, 2, 4, 8) for n in BUCKET_SIZES):
+    if any(n not in (1, 2, 4, 8) for n in buckets):
         raise ValueError("BUCKET_SIZES supports only 1, 2, 4, 8")
-    if sys.platform.startswith("linux") and any(n % 2 for n in HASH_SIZES_MB):
+    if sys.platform.startswith("linux") and any(n % 2 for n in hashes):
         raise ValueError("HASH_SIZES_MB must be even on Linux")
-    if type(REPETITIONS) is not int or REPETITIONS < 1 or type(ORDER_SEED) is not int:
+    if type(repetitions) is not int or repetitions < 1 or type(ORDER_SEED) is not int:
         raise ValueError("REPETITIONS must be positive and ORDER_SEED must be an integer")
     if not isinstance(CC, str) or not shlex.split(CC):
         raise ValueError("CC must name a compiler")
     if TIMEOUT_SECONDS is not None and (type(TIMEOUT_SECONDS) not in (int, float)
                                        or not math.isfinite(TIMEOUT_SECONDS) or TIMEOUT_SECONDS <= 0):
         raise ValueError("TIMEOUT_SECONDS must be positive or None")
-    combinations = list(itertools.product(BUCKET_SIZES, DEPTHS, THREAD_COUNTS, HASH_SIZES_MB, CAP_HELPERS))
+    combinations = list(itertools.product(buckets, depths, threads, hashes, caps))
     rng = random.Random(ORDER_SEED)
     plan = []
-    for repetition in range(1, REPETITIONS + 1):
+    for repetition in range(1, repetitions + 1):
         block = combinations.copy()
         rng.shuffle(block)
-        for bucket, depth, threads, memory, cap in block:
-            plan.append(dict(zip(RUN_FIELDS, [len(plan) + 1, repetition, bucket, depth, threads, memory, cap])))
+        for bucket, depth, workers, memory, cap in block:
+            plan.append(dict(zip(RUN_FIELDS, [len(plan) + 1, repetition, bucket, depth,
+                                               workers, memory, cap, phase])))
+    return plan
+
+
+def make_experiment_plan():
+    if (not isinstance(SWEEP_DEPTHS, (list, tuple))
+            or any(type(d) is not int for d in SWEEP_DEPTHS)
+            or list(SWEEP_DEPTHS) != sorted(set(SWEEP_DEPTHS))):
+        raise ValueError("SWEEP_DEPTHS must contain increasing, unique integer depths")
+    if any(d < 15 or d > 100 for d in SWEEP_DEPTHS):
+        raise ValueError("SWEEP_DEPTHS must be between 15 and 100")
+    plan = make_plan()
+    for depth in SWEEP_DEPTHS:
+        plan += make_plan(depths=[depth], threads=SWEEP_THREADS,
+                          hashes=SWEEP_HASH_SIZES_MB, caps=[0],
+                          repetitions=SWEEP_REPETITIONS, phase="depth-sweep")
+    for number, run in enumerate(plan, 1):
+        run["run"] = number
     return plan
 
 
@@ -159,26 +190,31 @@ def parse_result(path, expected):
     return summary, positions
 
 
-def build_command(bucket, binary):
-    return ["make", "-C", "src", "basic", f"BUCKET_SIZE={bucket}", f"CC={CC}", f"EXE={binary}"]
+def build_command(bucket, binary, cap_helpers=0):
+    return ["make", "-C", "src", "basic", f"BUCKET_SIZE={bucket}",
+            f"CPPFLAGS=-DBENCH_CAP_HELPERS={cap_helpers}", f"CC={CC}", f"EXE={binary}"]
 
 
 def bench_command(run, binary):
-    return [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"]), str(run["cap_helpers"])]
+    return [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"])]
 
 
-def record_metadata(output_dir):
+def record_metadata(output_dir, deadline=None, runner_file=None):
     commit = capture(["git", "rev-parse", "HEAD"], required=True)
     status = capture(["git", "status", "--short"], required=True)
     patch = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
     (output_dir / "source.patch").write_bytes(patch)
-    shutil.copyfile(Path(__file__), output_dir / "runner.py")
+    entrypoint = Path(__file__) if runner_file is None else Path(runner_file)
+    shutil.copyfile(entrypoint, output_dir / "runner.py")
+    if entrypoint.resolve() != Path(__file__).resolve():
+        shutil.copyfile(Path(__file__), output_dir / "run_experiments.py")
     details = [f"started_utc: {utc_now()}", f"hostname: {platform.node()}",
                f"platform: {platform.platform()}", f"machine: {platform.machine()}",
                f"python: {sys.version}", f"source_commit: {commit}",
                f"source_status_before_run:\n{status or '(clean)'}",
                f"runner_command: {shlex.join(sys.argv)}", f"order_seed: {ORDER_SEED}",
                f"timeout_seconds: {TIMEOUT_SECONDS}",
+               f"total_budget_seconds_at_metadata: {None if deadline is None else max(0, deadline - time.monotonic())}",
                f"allowed_cpus: {sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else 'unavailable'}",
                "placement: inherited from invoking shell/scheduler; no per-worker pinning"]
     for command in ([*shlex.split(CC), "--version"], ["make", "--version"], ["lscpu"],
@@ -204,7 +240,7 @@ def budget_timeout(deadline, per_run_limit=None):
         return per_run_limit
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise BudgetExpired("Overnight wall-time budget exhausted")
+        raise BudgetExpired("Experiment wall-time budget exhausted")
     return min(remaining, per_run_limit) if per_run_limit is not None else remaining
 
 
@@ -228,7 +264,7 @@ def run_command(command, file, timeout):
         raise subprocess.CalledProcessError(code, command)
 
 
-def execute(plan, output_dir, deadline=None):
+def execute(plan, output_dir, deadline=None, runner_file=None):
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "raw").mkdir()
     (output_dir / "bin").mkdir()
@@ -236,23 +272,23 @@ def execute(plan, output_dir, deadline=None):
     status.write_text("building\n")
     print(f"Results: {output_dir}", flush=True)
     try:
-        record_metadata(output_dir)
+        record_metadata(output_dir, deadline, runner_file)
         with (output_dir / "plan.csv").open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=RUN_FIELDS)
             writer.writeheader()
             writer.writerows(plan)
         binaries = {}
         with (output_dir / "build-commands.txt").open("w") as commands:
-            for bucket in BUCKET_SIZES:
-                binary = output_dir / "bin" / f"weiss-b{bucket}"
-                command = build_command(bucket, binary)
+            for bucket, cap in sorted({(r["bucket_size"], r["cap_helpers"]) for r in plan}):
+                binary = output_dir / "bin" / f"weiss-b{bucket}-cap{cap}"
+                command = build_command(bucket, binary, cap)
                 commands.write(shlex.join(command) + "\n")
                 commands.flush()
-                print(f"Building bucket size {bucket}", flush=True)
-                log = output_dir / f"build-b{bucket}.log"
+                print(f"Building bucket size {bucket}, cap_helpers={cap}", flush=True)
+                log = output_dir / f"build-b{bucket}-cap{cap}.log"
                 with log.open("w") as file:
                     run_command(command, file, budget_timeout(deadline))
-                binaries[bucket] = (binary, hashlib.sha256(binary.read_bytes()).hexdigest())
+                binaries[bucket, cap] = (binary, hashlib.sha256(binary.read_bytes()).hexdigest())
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
                           "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
                           "helper_nodes_beyond_depth", "helper_max_started_iteration",
@@ -269,7 +305,7 @@ def execute(plan, output_dir, deadline=None):
             run_file.flush()
             position_file.flush()
             for run in plan:
-                binary, digest = binaries[run["bucket_size"]]
+                binary, digest = binaries[run["bucket_size"], run["cap_helpers"]]
                 command = bench_command(run, binary)
                 raw = output_dir / "raw" / f"run-{run['run']:04d}.log"
                 status.write_text(f"running {run['run']} of {len(plan)}\n")
@@ -291,6 +327,8 @@ def execute(plan, output_dir, deadline=None):
                 print(f"  elapsed {summary['wall_ns'] / 1e9:.6f} s; CPU {summary['cpu_ns'] / 1e9:.6f} s", flush=True)
     except (Exception, KeyboardInterrupt) as error:
         label = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+        if isinstance(error, subprocess.TimeoutExpired):
+            label = "timed-out"
         if isinstance(error, BudgetExpired) or (deadline is not None and time.monotonic() >= deadline):
             label = "budget-limited"
         status.write_text(f"{label}: {error}\n")
@@ -299,26 +337,40 @@ def execute(plan, output_dir, deadline=None):
     print(f"Completed {len(plan)} runs. Results: {output_dir}", flush=True)
 
 
-def main():
+def main(plan=None, runner_file=None, results_prefix=""):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan only; no files, builds, or benchmarks")
     args = parser.parse_args()
-    plan = make_plan()
-    print(f"{len(plan)} benchmark runs x 50 positions; {len(BUCKET_SIZES)} build(s).")
+    if (type(TIME_BUDGET_HOURS) not in (int, float) or not math.isfinite(TIME_BUDGET_HOURS)
+            or not 0 < TIME_BUDGET_HOURS <= 24):
+        raise ValueError("TIME_BUDGET_HOURS must be positive and at most 24 hours")
+    plan = make_experiment_plan() if plan is None else plan
+    variants = sorted({(r["bucket_size"], r["cap_helpers"]) for r in plan})
+    print(f"{len(plan)} benchmark runs x 50 positions; {len(variants)} build(s).")
+    print(f"Budget: {TIME_BUDGET_HOURS:g} h; per-benchmark timeout: {TIMEOUT_SECONDS} s.")
+    print("Stops at the first timeout or budget limit. Complete 50-position benchmarks are saved; "
+          "the final configuration block may be incomplete.")
     if args.dry_run:
-        for bucket in BUCKET_SIZES:
-            print(shlex.join(build_command(bucket, Path('<run-directory>') / 'bin' / f'weiss-b{bucket}')))
+        for bucket, cap in variants:
+            binary = Path('<run-directory>') / 'bin' / f'weiss-b{bucket}-cap{cap}'
+            print(shlex.join(build_command(bucket, binary, cap)))
         for run in plan:
-            print(f"run={run['run']} repetition={run['repetition']} "
-                  + shlex.join(bench_command(run, Path('<run-directory>') / 'bin' / f"weiss-b{run['bucket_size']}")))
+            print(f"run={run['run']} phase={run['phase']} repetition={run['repetition']} "
+                  + shlex.join(bench_command(run, Path('<run-directory>') / 'bin' / f"weiss-b{run['bucket_size']}-cap{run['cap_helpers']}")))
         return
-    if hasattr(os, "sched_getaffinity") and max(THREAD_COUNTS) > len(os.sched_getaffinity(0)):
+    if hasattr(os, "sched_getaffinity") and max(r["threads"] for r in plan) > len(os.sched_getaffinity(0)):
         raise ValueError("Requested threads exceed this process's allowed CPUs; check your allocation")
     if capture(["git", "ls-files", "--others", "--exclude-standard", "--", "src"], required=True):
         raise ValueError("Untracked files under src/: git-add source changes before recording an experiment")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    execute(plan, ROOT / "results" / "experiments" / run_id)
+    deadline = time.monotonic() + TIME_BUDGET_HOURS * 3600
+    try:
+        execute(plan, ROOT / "results" / "experiments" / f"{results_prefix}{run_id}",
+                deadline, runner_file=runner_file)
+    except (BudgetExpired, subprocess.TimeoutExpired):
+        print("Time limit reached. Completed benchmarks remain in runs.csv/positions.csv; "
+              "unfinished runs are excluded from the CSVs, and their logs are retained.", flush=True)
 
 
 if __name__ == "__main__":
