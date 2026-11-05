@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_experiments.py"
 spec = importlib.util.spec_from_file_location("runner", SCRIPT)
@@ -18,11 +18,11 @@ spec.loader.exec_module(runner)
 
 def log_text(depth=4, threads=1, memory=4, bucket=2):
     lines = [f"BENCH_CONFIG depth={depth} threads={threads} hash_mb={memory} bucket_size={bucket} "
-             f"entry_bytes=16 bucket_bytes={16*bucket} buckets={memory*1024*1024//(16*bucket)}",
+             f"entry_bytes=16 bucket_bytes={16*bucket} buckets={memory*1024*1024//(16*bucket)} cap_helpers=0",
              "BENCH_POSITION_HEADER," + ",".join(runner.POSITION_FIELDS)]
     for i in range(1, 51):
         score = "mate,1,30999" if i == 1 else "cp,-20,-20"
-        lines.append(f"BENCH_POSITION,{i},{depth},1000000,1000000,10,{10*threads},e2e4,{score}")
+        lines.append(f"BENCH_POSITION,{i},{depth},1000000,1000000,10,{10*threads},e2e4,{score},0,0,0")
     lines += ["BENCH_TOTAL wall_ns=50000000 cpu_ns=50000000",
               f"OVERALL: 50 ms {500*threads} nodes {10000*threads} nps"]
     return "\n".join(lines) + "\n"
@@ -33,7 +33,7 @@ class RunnerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.expected = dict(bucket_size=2, depth=4, threads=1, hash_mb=4)
+        self.expected = dict(bucket_size=2, depth=4, threads=1, hash_mb=4, cap_helpers=0)
         self.log = self.root / "raw.log"
 
     def parse(self, text, expected=None):
@@ -63,6 +63,36 @@ class RunnerTests(unittest.TestCase):
             with self.subTest(text=text[-120:]), self.assertRaises(ValueError):
                 self.parse(text)
 
+    def test_cap_modes_are_separate_and_checked_against_engine_output(self):
+        with patch.object(runner, "CAP_HELPERS", [0, 1]):
+            plan = runner.make_plan()
+        self.assertEqual({r["cap_helpers"] for r in plan}, {0, 1})
+        expected = dict(self.expected, cap_helpers=1)
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.parse(log_text(), expected)
+        text = log_text(threads=2).replace("cap_helpers=0", "cap_helpers=1")
+        text = text.replace("cp,-20,-20,0,0,0", "cp,-20,-20,5,4,1")
+        with self.assertRaisesRegex(ValueError, "helper telemetry"):
+            self.parse(text, dict(expected, threads=2))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group cleanup")
+    def test_timeout_stops_the_whole_child_process_group(self):
+        process = Mock(pid=12345)
+        process.wait.side_effect = [subprocess.TimeoutExpired("fake", 1), 0]
+        with patch.object(runner.subprocess, "Popen", return_value=process):
+            with patch.object(runner.os, "killpg") as kill:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    runner.run_command(["fake"], None, 1)
+        kill.assert_called_once_with(12345, runner.signal.SIGKILL)
+
+    def test_budget_timeout_uses_remaining_wall_time(self):
+        with patch.object(runner.time, "monotonic", return_value=100):
+            self.assertEqual(runner.budget_timeout(110, 300), 10)
+            self.assertEqual(runner.budget_timeout(110, 2), 2)
+            self.assertIsNone(runner.budget_timeout(None))
+            with self.assertRaises(runner.BudgetExpired):
+                runner.budget_timeout(99)
+
     def test_plan_has_every_combination_once_per_repetition_and_is_repeatable(self):
         with patch.multiple(runner, BUCKET_SIZES=[1, 2], DEPTHS=[4, 5], THREAD_COUNTS=[1, 2],
                             HASH_SIZES_MB=[4], REPETITIONS=2):
@@ -76,7 +106,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_invalid_settings_fail(self):
         for setting, value in [("BUCKET_SIZES", [3]), ("THREAD_COUNTS", [1, 1]),
-                               ("DEPTHS", []), ("DEPTHS", [101]), ("REPETITIONS", 0),
+                               ("DEPTHS", []), ("DEPTHS", [101]), ("CAP_HELPERS", [2]), ("REPETITIONS", 0),
                                ("TIMEOUT_SECONDS", float("nan")), ("HASH_SIZES_MB", [1])]:
             with self.subTest(setting=setting), patch.object(runner, setting, value):
                 with self.assertRaises(ValueError):
@@ -120,11 +150,11 @@ if os.environ.get("FAKE_FAIL_SECOND"):
     if count == 2:
         print("deliberately incomplete fake engine output")
         sys.exit(7)
-depth, threads, memory = map(int, sys.argv[2:])
+depth, threads, memory, cap = map(int, sys.argv[2:])
 bucket = int(Path(sys.argv[0]).name.rsplit('b', 1)[1])
-print(f'BENCH_CONFIG depth={depth} threads={threads} hash_mb={memory} bucket_size={bucket} entry_bytes=16 bucket_bytes={16*bucket} buckets={memory*1024*1024//(16*bucket)}')
-print('BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score')
-for i in range(1, 51): print(f'BENCH_POSITION,{i},{depth},1000000,1000000,10,{10*threads},e2e4,cp,20,20')
+print(f'BENCH_CONFIG depth={depth} threads={threads} hash_mb={memory} bucket_size={bucket} entry_bytes=16 bucket_bytes={16*bucket} buckets={memory*1024*1024//(16*bucket)} cap_helpers={cap}')
+print('BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth')
+for i in range(1, 51): print(f'BENCH_POSITION,{i},{depth},1000000,1000000,10,{10*threads},e2e4,cp,20,20,0,0,0')
 print('BENCH_TOTAL wall_ns=50000000 cpu_ns=50000000')
 print(f'OVERALL: 50 ms {500*threads} nodes {10000*threads} nps')
 """

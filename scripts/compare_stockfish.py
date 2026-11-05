@@ -15,11 +15,14 @@ OUTPUT_DIR = ROOT / "results/stockfish-comparison/kiloampere-20261028"
 NEAR_BEST_CP = 25  # Descriptive tolerance, in Stockfish's own score scale.
 # =============================================================================
 
-CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "binary_sha256"]
+CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "binary_sha256"]
 
 
 def compare(positions, reference):
     """One output row per Weiss search; missing candidate scores stay missing."""
+    positions = positions.copy()
+    if "cap_helpers" not in positions:
+        positions["cap_helpers"] = 0
     if reference.duplicated(["position", "move"]).any():
         raise ValueError("Duplicate reference position/move")
     for _, group in reference.groupby("position"):
@@ -98,6 +101,8 @@ def main():
     if not reference["fen"].eq(reference["position"].map(saved_fens.set_index("position")["fen"])).all():
         raise ValueError("top5.csv and positions.csv have different FENs")
 
+    if "cap_helpers" not in positions:
+        positions["cap_helpers"] = 0
     rows = compare(positions, reference)
     repetitions = summarize(rows, CONFIG + ["run", "repetition"])
     timings = rows.groupby("run").agg(wall_ns=("wall_ns", "sum")) / 1e9
@@ -137,7 +142,7 @@ def main():
     }.items():
         table.to_csv(OUTPUT_DIR / f"{name}.csv", index=False, float_format="%.4f")
 
-    print(configurations[["bucket_size", "depth", "threads", "hash_mb", "mean_wall_seconds",
+    print(configurations[["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "mean_wall_seconds",
                           "mean_absolute_score_difference_cp", "best_move_agreement_pct",
                           "top5_coverage_pct", "mean_move_gap_cp"]]
           .to_string(index=False))

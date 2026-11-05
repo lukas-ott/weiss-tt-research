@@ -27,6 +27,10 @@ include per-position runtime, chosen move and score, plus complete raw logs and
 build/machine metadata. Generated experiment directories are ignored by Git and
 must be backed up separately.
 
+For a bounded server run comparing capped/uncapped helpers and increasing depth
+at 2/64/512 MiB, see the [overnight study](docs/overnight.md). It has an editable
+settings block, a dry run and a wall-time budget. It runs on the server after SSH.
+
 ## Stockfish reference and comparison
 
 The [Stockfish 19 reference](results/stockfish19-reference-20261029/README.md)
@@ -70,12 +74,14 @@ total entry capacity. Depth, thread count and TT MiB are runtime arguments:
 
 ```bash
 make -C src basic EXE=weiss-bench BUCKET_SIZE=2
-./src/weiss-bench bench 12 8 64
-#                         depth threads TT-MiB
+./src/weiss-bench bench 12 8 64 0
+#                         depth threads TT-MiB cap-helpers
 ```
 
 Omitted arguments retain defaults of depth 14, 1 search worker and 32 MiB TT.
-The worker count includes the main search worker. UCI option defaults are unchanged.
+The worker count includes the main search worker. Optional `cap_helpers` is 0
+(original behavior, default) or 1 (helpers stop after the requested iteration).
+UCI option defaults are unchanged.
 See the [experiment guide](docs/experiments.md) for output columns and timing scope.
 
 ## Historical proof of concept

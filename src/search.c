@@ -723,7 +723,8 @@ static void *IterativeDeepening(void *voidThread) {
     int multiPV = MIN(Limits.multiPV, thread->rootMoveCount);
 
     // Iterative deepening
-    while (++thread->depth <= (mainThread ? Limits.depth : MAX_PLY)) {
+    Depth depthLimit = mainThread || Limits.capHelpers ? Limits.depth : MAX_PLY;
+    while (++thread->depth <= depthLimit) {
 
         // Jump here and return if we run out of allocated time mid-search
         if (setjmp(thread->jumpBuffer)) break;
@@ -734,6 +735,9 @@ static void *IterativeDeepening(void *voidThread) {
 
         // Sort root moves so they are printed in the right order in multi-pv mode
         SortRootMoves(thread, 0);
+        thread->completedDepth = thread->depth;
+        if (thread->depth == Limits.depth)
+            thread->nodesAtDepthLimit = pos->nodes;
 
         // Only the main thread concerns itself with the rest
         if (!mainThread) continue;

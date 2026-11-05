@@ -65,6 +65,8 @@ typedef struct Thread {
     jmp_buf jumpBuffer;
     uint64_t tbhits;
     Depth depth;
+    Depth completedDepth;
+    uint64_t nodesAtDepthLimit;
     bool doPruning;
     bool uncertain;
     int multiPV;

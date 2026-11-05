@@ -12,8 +12,10 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +26,7 @@ BUCKET_SIZES = [2]                 # Supported: 1, 2, 4, 8. One binary per size.
 DEPTHS = [12]
 THREAD_COUNTS = [1, 2, 4, 8]        # Server example: [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192]
 HASH_SIZES_MB = [64]                # MiB; even values on Linux, at least 2.
+CAP_HELPERS = [0]                  # 0: original; 1: helpers stop at requested depth.
 REPETITIONS = 5                    # Each combination is run this many times.
 ORDER_SEED = 2026                  # Reproducibly shuffle combinations per repetition.
 CC = "gcc"                        # Compiler used for every bucket variant.
@@ -32,8 +35,10 @@ TIMEOUT_SECONDS = None             # Optional limit per complete 50-position ben
 # ==============================================================================
 
 POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "nodes",
-                   "bestmove", "score_type", "score", "raw_score"]
-RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb"]
+                   "bestmove", "score_type", "score", "raw_score",
+                   "helper_max_started_iteration", "helper_max_completed_iteration",
+                   "helper_nodes_beyond_depth"]
+RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers"]
 PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
 OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$")
 
@@ -58,7 +63,8 @@ def capture(command, required=False):
 def make_plan():
     dimensions = [("BUCKET_SIZES", BUCKET_SIZES, 1, 8), ("DEPTHS", DEPTHS, 1, 100),
                   ("THREAD_COUNTS", THREAD_COUNTS, 1, 2048),
-                  ("HASH_SIZES_MB", HASH_SIZES_MB, 2, None)]
+                  ("HASH_SIZES_MB", HASH_SIZES_MB, 2, None),
+                  ("CAP_HELPERS", CAP_HELPERS, 0, 1)]
     for name, values, minimum, maximum in dimensions:
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"{name} must be a nonempty list")
@@ -76,14 +82,14 @@ def make_plan():
     if TIMEOUT_SECONDS is not None and (type(TIMEOUT_SECONDS) not in (int, float)
                                        or not math.isfinite(TIMEOUT_SECONDS) or TIMEOUT_SECONDS <= 0):
         raise ValueError("TIMEOUT_SECONDS must be positive or None")
-    combinations = list(itertools.product(BUCKET_SIZES, DEPTHS, THREAD_COUNTS, HASH_SIZES_MB))
+    combinations = list(itertools.product(BUCKET_SIZES, DEPTHS, THREAD_COUNTS, HASH_SIZES_MB, CAP_HELPERS))
     rng = random.Random(ORDER_SEED)
     plan = []
     for repetition in range(1, REPETITIONS + 1):
         block = combinations.copy()
         rng.shuffle(block)
-        for bucket, depth, threads, memory in block:
-            plan.append(dict(zip(RUN_FIELDS, [len(plan) + 1, repetition, bucket, depth, threads, memory])))
+        for bucket, depth, threads, memory, cap in block:
+            plan.append(dict(zip(RUN_FIELDS, [len(plan) + 1, repetition, bucket, depth, threads, memory, cap])))
     return plan
 
 
@@ -111,9 +117,9 @@ def parse_result(path, expected):
     if len(configs) != 1 or headers != [POSITION_FIELDS] or len(totals) != 1 or len(overall) != 1:
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
     config = {key: int(value) for key, value in configs[0].items()}
-    if not {"bucket_size", "depth", "threads", "hash_mb", "entry_bytes", "bucket_bytes", "buckets"} <= config.keys():
+    if not {"bucket_size", "depth", "threads", "hash_mb", "entry_bytes", "bucket_bytes", "buckets", "cap_helpers"} <= config.keys():
         raise ValueError(f"Missing benchmark configuration fields in {path}")
-    if any(config.get(key) != expected[key] for key in ("bucket_size", "depth", "threads", "hash_mb")):
+    if any(config.get(key) != expected[key] for key in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers")):
         raise ValueError(f"Benchmark configuration differs from requested run in {path}")
     if config["bucket_bytes"] != config["bucket_size"] * config["entry_bytes"] or (
             config["buckets"] * config["bucket_bytes"] != config["hash_mb"] * 1024 * 1024):
@@ -128,6 +134,15 @@ def parse_result(path, expected):
                 or row["score_type"] not in ("cp", "mate")
                 or (row["score_type"] == "cp" and row["score"] != row["raw_score"])):
             raise ValueError(f"Invalid or incomplete position {row['position']} in {path}")
+        started = row["helper_max_started_iteration"]
+        completed = row["helper_max_completed_iteration"]
+        beyond = row["helper_nodes_beyond_depth"]
+        if (not 0 <= completed <= started <= 100
+                or not 0 <= beyond <= row["nodes"] - row["main_nodes"]
+                or (beyond > 0 and started <= expected["depth"])
+                or (expected["cap_helpers"] and (started > expected["depth"] or beyond != 0))
+                or (expected["threads"] == 1 and (started or completed or beyond))):
+            raise ValueError(f"Invalid helper telemetry in {path}")
     summary = {key: sum(row[key] for row in positions)
                for key in ("wall_ns", "cpu_ns", "main_nodes", "nodes")}
     if any(int(totals[0].get(key, -1)) != summary[key] for key in ("wall_ns", "cpu_ns")):
@@ -135,6 +150,10 @@ def parse_result(path, expected):
     elapsed_ms, nodes, nps = overall[0]
     if nodes != summary["nodes"] or elapsed_ms != max(1, summary["wall_ns"] // 1_000_000):
         raise ValueError(f"OVERALL does not match position rows in {path}")
+    summary.update(
+        helper_nodes_beyond_depth=sum(row["helper_nodes_beyond_depth"] for row in positions),
+        helper_max_started_iteration=max(row["helper_max_started_iteration"] for row in positions),
+        helper_max_completed_iteration=max(row["helper_max_completed_iteration"] for row in positions))
     summary.update(elapsed_ms=elapsed_ms, nps=nps,
                    **{key: config[key] for key in ("entry_bytes", "bucket_bytes", "buckets")})
     return summary, positions
@@ -145,7 +164,7 @@ def build_command(bucket, binary):
 
 
 def bench_command(run, binary):
-    return [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"])]
+    return [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"]), str(run["cap_helpers"])]
 
 
 def record_metadata(output_dir):
@@ -175,7 +194,41 @@ def record_metadata(output_dir):
     (output_dir / "run-info.txt").write_text("\n".join(details) + "\n", encoding="utf-8")
 
 
-def execute(plan, output_dir):
+class BudgetExpired(RuntimeError):
+    pass
+
+
+def budget_timeout(deadline, per_run_limit=None):
+    """Bound subprocess wall time; the clock includes clearing and process startup."""
+    if deadline is None:
+        return per_run_limit
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BudgetExpired("Overnight wall-time budget exhausted")
+    return min(remaining, per_run_limit) if per_run_limit is not None else remaining
+
+
+def run_command(command, file, timeout):
+    """On timeout/interrupt, also stop compiler children rather than leaving jobs behind."""
+    process = subprocess.Popen(command, cwd=ROOT, stdout=file, stderr=subprocess.STDOUT,
+                               start_new_session=os.name == "posix")
+    try:
+        code = process.wait(timeout=timeout)
+    except BaseException:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    if code:
+        raise subprocess.CalledProcessError(code, command)
+
+
+def execute(plan, output_dir, deadline=None):
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "raw").mkdir()
     (output_dir / "bin").mkdir()
@@ -198,10 +251,12 @@ def execute(plan, output_dir):
                 print(f"Building bucket size {bucket}", flush=True)
                 log = output_dir / f"build-b{bucket}.log"
                 with log.open("w") as file:
-                    subprocess.run(command, cwd=ROOT, stdout=file, stderr=subprocess.STDOUT, check=True)
+                    run_command(command, file, budget_timeout(deadline))
                 binaries[bucket] = (binary, hashlib.sha256(binary.read_bytes()).hexdigest())
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
-                          "entry_bytes", "bucket_bytes", "buckets"]
+                          "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
+                          "helper_nodes_beyond_depth", "helper_max_started_iteration",
+                          "helper_max_completed_iteration"]
         with (output_dir / "runs.csv").open("w", newline="") as run_file, (
                 output_dir / "positions.csv").open("w", newline="") as position_file:
             runs = csv.DictWriter(run_file, fieldnames=RUN_FIELDS + ["started_utc", "finished_utc"]
@@ -220,11 +275,13 @@ def execute(plan, output_dir):
                 status.write_text(f"running {run['run']} of {len(plan)}\n")
                 print(f"[{run['run']}/{len(plan)}] {shlex.join(command)}", flush=True)
                 started = utc_now()
+                process_start = time.monotonic_ns()
                 with raw.open("w") as file:
-                    subprocess.run(command, cwd=ROOT, stdout=file, stderr=subprocess.STDOUT,
-                                   check=True, timeout=TIMEOUT_SECONDS)
+                    run_command(command, file, budget_timeout(deadline, TIMEOUT_SECONDS))
                 finished = utc_now()
+                process_wall_ns = time.monotonic_ns() - process_start
                 summary, rows = parse_result(raw, run)
+                summary["process_wall_ns"] = process_wall_ns
                 provenance = dict(binary_sha256=digest, raw_log=str(raw.relative_to(output_dir)))
                 positions.writerows({**run, **row, **provenance} for row in rows)
                 position_file.flush()
@@ -233,7 +290,10 @@ def execute(plan, output_dir):
                 run_file.flush()
                 print(f"  elapsed {summary['wall_ns'] / 1e9:.6f} s; CPU {summary['cpu_ns'] / 1e9:.6f} s", flush=True)
     except (Exception, KeyboardInterrupt) as error:
-        status.write_text(f"{'interrupted' if isinstance(error, KeyboardInterrupt) else 'failed'}: {error}\n")
+        label = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+        if isinstance(error, BudgetExpired) or (deadline is not None and time.monotonic() >= deadline):
+            label = "budget-limited"
+        status.write_text(f"{label}: {error}\n")
         raise
     status.write_text(f"complete {utc_now()}\n")
     print(f"Completed {len(plan)} runs. Results: {output_dir}", flush=True)

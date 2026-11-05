@@ -120,13 +120,14 @@ static uint64_t BenchClock(clockid_t clock) {
 
 void Benchmark(int argc, char **argv) {
 
-    if (argc > 5) {
-        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb]]]\n", argv[0]);
+    if (argc > 6) {
+        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb [cap_helpers]]]]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
     // Runtime parameters; omitted arguments retain the original benchmark defaults.
     Limits.depth = argc > 2 ? BenchArgument(argv[2], "depth", 1, MAX_PLY) : 14;
     int threadCount = argc > 3 ? BenchArgument(argv[3], "threads", 1, 2048) : 1;
+    Limits.capHelpers = argc > 5 ? BenchArgument(argv[5], "cap_helpers", 0, 1) : false;
     TT.requestedMB = argc > 4 ? BenchArgument(argv[4], "hash_mb", HASH_MIN, HASH_MAX) : HASH_DEFAULT;
 #if defined(__linux__)
     if (TT.requestedMB % 2 != 0) {
@@ -144,11 +145,11 @@ void Benchmark(int argc, char **argv) {
     uint64_t totalWallNS = 0, totalCpuNS = 0, totalNodes = 0;
 
     printf("BENCH_CONFIG depth=%d threads=%d hash_mb=%" PRIu64
-           " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64 "\n",
+           " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64 " cap_helpers=%d\n",
            Limits.depth, threadCount, TT.currentMB, BUCKET_SIZE,
-           sizeof(TTEntry), sizeof(TTBucket), TT.count);
+           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers);
 
-    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score");
+    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth");
     for (int i = 0; i < FENCount; ++i) {
         printf("[# %2d] %s\n", i + 1, BenchmarkFENs[i]);
         fflush(stdout);
@@ -175,6 +176,17 @@ void Benchmark(int argc, char **argv) {
         r->score = Threads[0].rootMoves[0].score;
         r->best = Threads[0].rootMoves[0].move;
 
+        int helperStarted = 0, helperCompleted = 0;
+        uint64_t helperBeyondNodes = 0;
+        for (int t = 1; t < threadCount; ++t) {
+            Thread *helper = &Threads[t];
+            int limit = Limits.capHelpers ? Limits.depth : MAX_PLY;
+            helperStarted = MAX(helperStarted, MIN(helper->depth, limit));
+            helperCompleted = MAX(helperCompleted, helper->completedDepth);
+            if (helper->completedDepth >= Limits.depth)
+                helperBeyondNodes += helper->pos.nodes - helper->nodesAtDepthLimit;
+        }
+
         totalWallNS += r->wallNS;
         totalCpuNS += r->cpuNS;
         totalNodes += r->nodes;
@@ -185,9 +197,10 @@ void Benchmark(int argc, char **argv) {
         int distance = (MATE - abs(r->score) + 1) / 2;
         int score = mate ? (r->score > 0 ? distance : -distance) : r->score;
         printf("BENCH_POSITION,%d,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
-               ",%" PRIu64 ",%s,%s,%d,%d\n",
+               ",%" PRIu64 ",%s,%s,%d,%d,%d,%d,%" PRIu64 "\n",
                i + 1, r->depth, r->wallNS, r->cpuNS, r->mainNodes, r->nodes,
-               MoveToStr(r->best), mate ? "mate" : "cp", score, r->score);
+               MoveToStr(r->best), mate ? "mate" : "cp", score, r->score,
+               helperStarted, helperCompleted, helperBeyondNodes);
         fflush(stdout);
     }
     printf("BENCH_TOTAL wall_ns=%" PRIu64 " cpu_ns=%" PRIu64 "\n", totalWallNS, totalCpuNS);

@@ -29,6 +29,7 @@ typedef struct {
     int optimalUsage, maxUsage;
     int mate;
     bool timelimit, nodeTime, infinite;
+    bool capHelpers; // Benchmark experiment: helpers stop at the requested iteration.
     Move searchmoves[64];
     int multiPV;
 } SearchLimits;

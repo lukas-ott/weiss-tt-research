@@ -11,7 +11,7 @@ EXPERIMENT_DIR = Path("results/experiments/20261028T143204152830Z")
 def summarize(positions):
     # Keep different positions, configurations and engine builds separate.
     group_columns = [
-        "bucket_size", "depth", "threads", "hash_mb", "binary_sha256", "position"
+        "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "binary_sha256", "position"
     ]
     rows = []
 
@@ -34,6 +34,10 @@ def summarize(positions):
         # Pandas leaves this blank in the CSV when fewer than two cp scores exist.
         row["cp_variance"] = cp_scores.var(ddof=1)
         row["cp_stddev"] = cp_scores.std(ddof=1)
+        if "helper_nodes_beyond_depth" in group:
+            row["helper_nodes_beyond_depth_mean"] = group["helper_nodes_beyond_depth"].mean()
+            row["helper_max_started_iteration"] = group["helper_max_started_iteration"].max()
+            row["helper_max_completed_iteration"] = group["helper_max_completed_iteration"].max()
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -41,6 +45,8 @@ def summarize(positions):
 
 def main():
     positions = pd.read_csv(EXPERIMENT_DIR / "positions.csv")
+    if "cap_helpers" not in positions:
+        positions["cap_helpers"] = 0
     summary = summarize(positions)
     output_file = EXPERIMENT_DIR / "position_summary.csv"
     summary.to_csv(output_file, index=False, float_format="%.4f")

@@ -11,7 +11,7 @@ EXPERIMENT_DIR = Path("results/experiments/20261028T143204152830Z")
 def summarize(runs):
     # Keep configurations and engine builds separate.
     group_columns = [
-        "bucket_size", "depth", "threads", "hash_mb", "binary_sha256"
+        "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "binary_sha256"
     ]
     rows = []
 
@@ -34,6 +34,11 @@ def summarize(runs):
         row["nodes_mean"] = group["nodes"].mean()
         row["main_nodes_mean"] = group["main_nodes"].mean()
         row["throughput_mean_nodes_s"] = (group["nodes"] / runtime_s).mean()
+        if "process_wall_ns" in group:
+            row["process_runtime_mean_s"] = group["process_wall_ns"].mean() / 1e9
+        if "helper_nodes_beyond_depth" in group:
+            row["helper_nodes_beyond_depth_mean"] = group["helper_nodes_beyond_depth"].mean()
+            row["helper_beyond_depth_fraction_mean"] = (group["helper_nodes_beyond_depth"] / group["nodes"]).mean()
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -41,6 +46,8 @@ def summarize(runs):
 
 def main():
     runs = pd.read_csv(EXPERIMENT_DIR / "runs.csv")
+    if "cap_helpers" not in runs:
+        runs["cap_helpers"] = 0
     summary = summarize(runs)
     output_file = EXPERIMENT_DIR / "run_summary.csv"
     summary.to_csv(output_file, index=False, float_format="%.4f")
