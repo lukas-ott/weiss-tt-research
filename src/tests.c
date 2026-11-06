@@ -130,14 +130,15 @@ static uint64_t BenchClock(clockid_t clock) {
 
 void Benchmark(int argc, char **argv) {
 
-    if (argc > 5) {
-        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb]]]\n", argv[0]);
+    if (argc > 6) {
+        fprintf(stderr, "Usage: %s bench [depth [threads [hash_mb [rotate_root_moves]]]]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
     // Runtime parameters; omitted arguments retain the original benchmark defaults.
     Limits.depth = argc > 2 ? BenchArgument(argv[2], "depth", 1, MAX_PLY) : 14;
     int threadCount = argc > 3 ? BenchArgument(argv[3], "threads", 1, 2048) : 1;
     Limits.capHelpers = BENCH_CAP_HELPERS;
+    Limits.rotateRootMoves = argc > 5 ? BenchArgument(argv[5], "rotate_root_moves", 0, 1) : false;
     TT.requestedMB = argc > 4 ? BenchArgument(argv[4], "hash_mb", HASH_MIN, HASH_MAX) : HASH_DEFAULT;
 #if defined(__linux__)
     if (TT.requestedMB % 2 != 0) {
@@ -155,9 +156,10 @@ void Benchmark(int argc, char **argv) {
     uint64_t totalWallNS = 0, totalCpuNS = 0, totalNodes = 0;
 
     printf("BENCH_CONFIG depth=%d threads=%d hash_mb=%" PRIu64
-           " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64 " cap_helpers=%d\n",
+           " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64
+           " cap_helpers=%d rotate_root_moves=%d\n",
            Limits.depth, threadCount, TT.currentMB, BUCKET_SIZE,
-           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers);
+           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers, Limits.rotateRootMoves);
 
     puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth");
     for (int i = 0; i < FENCount; ++i) {

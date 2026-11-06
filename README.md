@@ -66,17 +66,23 @@ proof of concept.
 
 Only `BUCKET_SIZE` is a build setting. It accepts 1, 2, 4 or 8 entries per bucket,
 with default 2. At fixed TT memory, larger buckets mean fewer buckets and the same
-total entry capacity. Depth, thread count and TT MiB are runtime arguments:
+total entry capacity. Depth, thread count and TT MiB are runtime arguments. The optional fourth
+benchmark argument enables helper-only root move rotation for the experiment branch:
 
 ```bash
 make -C src basic EXE=weiss-bench BUCKET_SIZE=2
 ./src/weiss-bench bench 12 8 64
-#                         depth threads TT-MiB
+./src/weiss-bench bench 12 8 64 1
+#                         depth threads TT-MiB rotate_root_moves
 ```
 
 Omitted arguments retain defaults of depth 14, 1 search worker and 32 MiB TT.
-The worker count includes the main search worker. UCI option defaults are unchanged.
-See the [experiment guide](docs/experiments.md) for output columns and timing scope.
+The worker count includes the main search worker. Rotation value `1` cyclically
+shifts each helper's normally ordered legal root moves by its worker index modulo
+the root-move count on each root search; the main worker and deeper move ordering
+remain unchanged. Omitted or zero rotation preserves the normal search. UCI option
+defaults are unchanged. See the [experiment guide](docs/experiments.md) for a paired
+runner and output details.
 
 ## Historical proof of concept
 

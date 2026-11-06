@@ -30,6 +30,7 @@ typedef struct {
     int mate;
     bool timelimit, nodeTime, infinite;
     bool capHelpers; // Benchmark experiment: helpers stop at the requested iteration.
+    bool rotateRootMoves; // Benchmark experiment: helpers rotate the ordered root moves.
     Move searchmoves[64];
     int multiPV;
 } SearchLimits;

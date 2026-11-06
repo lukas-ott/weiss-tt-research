@@ -20,6 +20,7 @@
 #include "history.h"
 #include "move.h"
 #include "movepicker.h"
+#include "search.h"
 
 
 // Return the next best move
@@ -72,8 +73,8 @@ static void ScoreMoves(MovePicker *mp, const int stage) {
     SortMoves(list, -750 * mp->depth);
 }
 
-// Returns the next move to try in a position
-Move NextMove(MovePicker *mp) {
+// Returns moves in the engine's normal TT/capture/killer/history order.
+static Move NextMoveStandard(MovePicker *mp) {
 
     Move move;
     Position *pos = &mp->thread->pos;
@@ -139,6 +140,20 @@ Move NextMove(MovePicker *mp) {
     }
 }
 
+// For an experimental helper at the root, return the rotated standard move order.
+// All other searches continue through the normal staged picker.
+Move NextMove(MovePicker *mp) {
+    if (!mp->useRootMoveOrder)
+        return NextMoveStandard(mp);
+
+    const int count = mp->thread->rootMoveOrderCount;
+    if (mp->rootMoveOrderIndex >= count)
+        return NOMOVE;
+
+    int index = (mp->rootMoveOrderOffset + mp->rootMoveOrderIndex++) % count;
+    return mp->thread->rootMoveOrder[index];
+}
+
 // Init normal movepicker
 void InitNormalMP(MovePicker *mp, Thread *thread, Stack *ss, Depth depth, Move ttMove, Move killer) {
     mp->list.count = mp->list.next = 0;
@@ -151,6 +166,38 @@ void InitNormalMP(MovePicker *mp, Thread *thread, Stack *ss, Depth depth, Move t
     mp->bads      = 0;
     mp->threshold = 0;
     mp->onlyNoisy = false;
+    mp->useRootMoveOrder = false;
+    mp->rootMoveOrderIndex = 0;
+    mp->rootMoveOrderOffset = 0;
+
+    // Only rotate the actual root move sequence for helper workers. Build that
+    // sequence using the ordinary MovePicker, then offset it by worker index.
+    if (Limits.rotateRootMoves && thread->index > 0 && ss->ply == 0 && depth > 0) {
+        thread->rootMoveOrderCount = 0;
+        MovePicker standard = *mp;
+        Move move;
+
+        while ((move = NextMoveStandard(&standard))) {
+            bool allowedRootMove = false;
+            for (int i = 0; i < thread->rootMoveCount; ++i)
+                if (thread->rootMoves[i].move == move) {
+                    allowedRootMove = true;
+                    break;
+                }
+
+            if (allowedRootMove && thread->rootMoveOrderCount < 256)
+                thread->rootMoveOrder[thread->rootMoveOrderCount++] = move;
+        }
+
+        // Fall back to ordinary order if the picker did not produce every
+        // legal root move; never silently omit a move from the search.
+        if (thread->rootMoveOrderCount == thread->rootMoveCount && thread->rootMoveCount > 0) {
+            mp->useRootMoveOrder = true;
+            mp->rootMoveOrderOffset = thread->index % thread->rootMoveCount;
+        } else {
+            thread->rootMoveOrderCount = 0;
+        }
+    }
 }
 
 // Init noisy movepicker

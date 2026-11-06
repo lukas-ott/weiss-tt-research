@@ -38,6 +38,7 @@ SWEEP_DEPTHS = list(range(15, 31))   # Ascending depths; [] skips this sweep.
 SWEEP_THREADS = [1, 32, 128, 192]
 SWEEP_HASH_SIZES_MB = [2, 64, 512]
 SWEEP_REPETITIONS = 5               # Sweep uses original, uncapped helpers only.
+ROOT_MOVE_ROTATIONS = [0]            # 0 is original; one-off runner requests [0, 1].
 # CPU/NUMA policy is inherited from your shell or scheduler; no automatic binding.
 # ==============================================================================
 
@@ -45,7 +46,8 @@ POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "node
                    "bestmove", "score_type", "score", "raw_score",
                    "helper_max_started_iteration", "helper_max_completed_iteration",
                    "helper_nodes_beyond_depth"]
-RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "phase"]
+RUN_FIELDS = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
+              "cap_helpers", "rotate_root_moves", "phase"]
 PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
 OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$")
 
@@ -68,16 +70,18 @@ def capture(command, required=False):
 
 
 def make_plan(*, buckets=None, depths=None, threads=None, hashes=None, caps=None,
-              repetitions=None, phase="baseline"):
+              rotations=None, repetitions=None, phase="baseline"):
     buckets = BUCKET_SIZES if buckets is None else buckets
     depths = DEPTHS if depths is None else depths
     threads = THREAD_COUNTS if threads is None else threads
     hashes = HASH_SIZES_MB if hashes is None else hashes
     caps = [0] if caps is None else caps
+    rotations = ROOT_MOVE_ROTATIONS if rotations is None else rotations
     repetitions = REPETITIONS if repetitions is None else repetitions
     dimensions = [("BUCKET_SIZES", buckets, 1, 8), ("DEPTHS", depths, 1, 100),
                   ("THREAD_COUNTS", threads, 1, 2048),
-                  ("HASH_SIZES_MB", hashes, 2, None), ("CAP_HELPERS", caps, 0, 1)]
+                  ("HASH_SIZES_MB", hashes, 2, None), ("CAP_HELPERS", caps, 0, 1),
+                  ("ROOT_MOVE_ROTATIONS", rotations, 0, 1)]
     for name, values, minimum, maximum in dimensions:
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"{name} must be a nonempty list")
@@ -95,15 +99,15 @@ def make_plan(*, buckets=None, depths=None, threads=None, hashes=None, caps=None
     if TIMEOUT_SECONDS is not None and (type(TIMEOUT_SECONDS) not in (int, float)
                                        or not math.isfinite(TIMEOUT_SECONDS) or TIMEOUT_SECONDS <= 0):
         raise ValueError("TIMEOUT_SECONDS must be positive or None")
-    combinations = list(itertools.product(buckets, depths, threads, hashes, caps))
+    combinations = list(itertools.product(buckets, depths, threads, hashes, caps, rotations))
     rng = random.Random(ORDER_SEED)
     plan = []
     for repetition in range(1, repetitions + 1):
         block = combinations.copy()
         rng.shuffle(block)
-        for bucket, depth, workers, memory, cap in block:
+        for bucket, depth, workers, memory, cap, rotate in block:
             plan.append(dict(zip(RUN_FIELDS, [len(plan) + 1, repetition, bucket, depth,
-                                               workers, memory, cap, phase])))
+                                               workers, memory, cap, rotate, phase])))
     return plan
 
 
@@ -148,9 +152,10 @@ def parse_result(path, expected):
     if len(configs) != 1 or headers != [POSITION_FIELDS] or len(totals) != 1 or len(overall) != 1:
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
     config = {key: int(value) for key, value in configs[0].items()}
-    if not {"bucket_size", "depth", "threads", "hash_mb", "entry_bytes", "bucket_bytes", "buckets", "cap_helpers"} <= config.keys():
+    config.setdefault("rotate_root_moves", 0)  # Older benchmark logs used the unrotated order.
+    if not {"bucket_size", "depth", "threads", "hash_mb", "entry_bytes", "bucket_bytes", "buckets", "cap_helpers", "rotate_root_moves"} <= config.keys():
         raise ValueError(f"Missing benchmark configuration fields in {path}")
-    if any(config.get(key) != expected[key] for key in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers")):
+    if any(config.get(key) != expected.get(key, 0) for key in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves")):
         raise ValueError(f"Benchmark configuration differs from requested run in {path}")
     if config["bucket_bytes"] != config["bucket_size"] * config["entry_bytes"] or (
             config["buckets"] * config["bucket_bytes"] != config["hash_mb"] * 1024 * 1024):
@@ -196,7 +201,11 @@ def build_command(bucket, binary, cap_helpers=0):
 
 
 def bench_command(run, binary):
-    return [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"])]
+    command = [str(binary), "bench", str(run["depth"]), str(run["threads"]), str(run["hash_mb"])]
+    # Zero is the historical default; omit it to keep older command expectations valid.
+    if run.get("rotate_root_moves", 0):
+        command.append(str(run["rotate_root_moves"]))
+    return command
 
 
 def record_metadata(output_dir, deadline=None, runner_file=None):

@@ -15,7 +15,7 @@ OUTPUT_DIR = ROOT / "results/stockfish-comparison/kiloampere-20261028"
 NEAR_BEST_CP = 25  # Descriptive tolerance, in Stockfish's own score scale.
 # =============================================================================
 
-CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "binary_sha256"]
+CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
 
 
 def compare(positions, reference):
@@ -23,6 +23,8 @@ def compare(positions, reference):
     positions = positions.copy()
     if "cap_helpers" not in positions:
         positions["cap_helpers"] = 0
+    if "rotate_root_moves" not in positions:
+        positions["rotate_root_moves"] = 0
     if reference.duplicated(["position", "move"]).any():
         raise ValueError("Duplicate reference position/move")
     for _, group in reference.groupby("position"):
@@ -103,6 +105,8 @@ def main():
 
     if "cap_helpers" not in positions:
         positions["cap_helpers"] = 0
+    if "rotate_root_moves" not in positions:
+        positions["rotate_root_moves"] = 0
     rows = compare(positions, reference)
     repetitions = summarize(rows, CONFIG + ["run", "repetition"])
     timings = rows.groupby("run").agg(wall_ns=("wall_ns", "sum")) / 1e9

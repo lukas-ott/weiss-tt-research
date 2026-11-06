@@ -56,6 +56,38 @@ arguments. Linux TT sizes must be even and at least 2 MiB. `TIMEOUT_SECONDS`, wh
 set, limits an entire 50-position benchmark process, not an individual position;
 a timed-out run is incomplete and is not added to the CSV results.
 
+## Helper root move-order experiment
+
+`scripts/run_move_order.py` compares the existing search order with a helper-only
+cyclic rotation. Edit its settings block to choose depth, worker counts, TT size,
+repetitions and time budget. Preview the plan without building or searching:
+
+```bash
+python3 scripts/run_move_order.py --dry-run
+```
+
+When deliberately ready to run it:
+
+```bash
+python3 scripts/run_move_order.py
+```
+
+The runner requests both `rotate_root_moves=0` (control) and `=1` (rotation) in
+each repetition, randomized within each repetition and using the same executable.
+The latter rotates the complete normally ordered legal root-move sequence of each
+helper by `worker_index % root_move_count` at each root MovePicker setup. Worker 0
+keeps the normal order, and all deeper move pickers remain unchanged. Rotation may
+move the TT move away from first place in a helper; that is part of the treatment.
+The root move list is generated in that helper's current TT/capture/killer/history
+order before rotation, rather than using the separate `RootMove` bookkeeping array.
+
+Rotation has a runtime benchmark argument and is recorded in `BENCH_CONFIG`,
+`plan.csv`, `runs.csv` and `positions.csv`. The standard scaling runner leaves it
+off unless `ROOT_MOVE_ROTATIONS` is deliberately changed. Existing CSVs without the
+column are interpreted as unrotated. The dedicated runner writes to a
+`move-order-<UTC timestamp>` results folder. It launches searches only when invoked
+without `--dry-run`.
+
 Combinations are shuffled separately within each repetition using `ORDER_SEED`.
 The exact order is saved before building. A fixed seed reproduces ordering; it
 does not make the parallel search deterministic. No extra warm-up search runs are
@@ -119,7 +151,8 @@ Each invocation creates `results/experiments/<UTC timestamp>/`:
 | `source.patch`, `runner.py` | Tracked changes relative to the revision, plus the exact runner/settings |
 | `status.txt` | Building, current run, complete, failed, or interrupted |
 
-CSV rows include the run number, repetition, parameters, binary SHA-256 and raw-log
+CSV rows include the run number, repetition, parameters (including helper root
+move-order mode), binary SHA-256 and raw-log
 path. Moves use UCI notation. `score_type` is `cp` or `mate`; `score` means
 centipawns or signed moves to mate from the side-to-move perspective. `raw_score`
 is the internal searched score. All clocks are in nanoseconds; `runs.csv` also
@@ -188,8 +221,9 @@ folder. Rerunning replaces the summaries; the original input files stay unchange
   variance and standard deviation. Mate results count toward move frequencies but
   are excluded from score statistics, including when a group mixes score types.
 
-Configurations are separated by bucket size, depth, threads, TT MiB and executable
-SHA-256. Positions are also grouped by position ID. Do not combine experiment
+Configurations are separated by bucket size, depth, threads, TT MiB, helper cap,
+root move-order mode and executable SHA-256. Positions are also grouped by position
+ID. Do not combine experiment
 folders from different machines or placement settings.
 
 Wall runtime measures time to depth; CPU time accumulates across workers. Times
@@ -199,8 +233,9 @@ and standard deviation are blank when fewer than two relevant observations exist
 For example, scores 10 and 30 cp have mean 20 cp and sample variance 200 cp squared.
 Move variability does not establish move correctness or playing strength.
 
-The experiment runner still uses only the Python standard library. Pandas is
-needed only for these analysis scripts.
+The experiment runners use only the Python standard library. Pandas is needed for
+the summary/comparison scripts; Matplotlib is additionally needed for
+`scripts/visualize_experiments.py`.
 
 ## Compare moves and scores with Stockfish
 

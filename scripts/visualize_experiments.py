@@ -24,11 +24,11 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REFERENCE = ROOT / "results/stockfish19-reference-20261029/top5.csv"
-CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "binary_sha256"]
+CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
 NUMERIC_RUN = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
-               "cap_helpers", "wall_ns", "cpu_ns", "main_nodes", "nodes"]
+               "cap_helpers", "rotate_root_moves", "wall_ns", "cpu_ns", "main_nodes", "nodes"]
 NUMERIC_POSITION = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
-                    "cap_helpers", "position", "wall_ns", "cpu_ns", "main_nodes", "nodes", "score"]
+                    "cap_helpers", "rotate_root_moves", "position", "wall_ns", "cpu_ns", "main_nodes", "nodes", "score"]
 
 # ============================== EDIT SETTINGS HERE =============================
 # Put experiment folders here to run the script without command-line arguments.
@@ -44,6 +44,7 @@ FILTERS = {
     "threads": None,              # Example: [1, 4, 8, 32, 128, 192]
     "hash_mb": None,              # Example: [2, 64, 512]
     "cap_helpers": None,          # Example: [0] for uncapped, [1] for capped
+    "rotate_root_moves": None,    # Example: [0] original, [1] worker-index rotation
 }
 
 CHART_GROUPS = {"scaling": True, "stockfish": True, "stability": True}
@@ -125,6 +126,9 @@ def read_experiments(paths):
                 raise ValueError(f"{source / label} is missing columns: {', '.join(sorted(missing))}")
             if "cap_helpers" not in frame:
                 frame["cap_helpers"] = 0
+            if "rotate_root_moves" not in frame:
+                frame["rotate_root_moves"] = 0
+            numeric_columns(frame, ["rotate_root_moves"])
             if "binary_sha256" not in frame:
                 frame["binary_sha256"] = "unknown"
             frame["binary_sha256"] = frame["binary_sha256"].fillna("unknown").astype(str)
@@ -227,11 +231,10 @@ def make_run_summary(runs):
         data["process_wall_s"] = data["process_wall_ns"] / 1e9
         aggregations["process_wall_mean_s"] = ("process_wall_s", "mean")
     summary = data.groupby(CONFIG, dropna=False).agg(**aggregations).reset_index()
-    paired = summary.loc[summary["threads"] == 1,
-                         ["bucket_size", "depth", "hash_mb", "cap_helpers", "binary_sha256", "wall_mean_s"]]
+    pairing = ["bucket_size", "depth", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+    paired = summary.loc[summary["threads"] == 1, pairing + ["wall_mean_s"]]
     paired = paired.rename(columns={"wall_mean_s": "one_thread_wall_mean_s"})
-    summary = summary.merge(paired, on=["bucket_size", "depth", "hash_mb", "cap_helpers", "binary_sha256"],
-                            how="left", validate="many_to_one")
+    summary = summary.merge(paired, on=pairing, how="left", validate="many_to_one")
     summary["speedup_vs_1_thread"] = summary["one_thread_wall_mean_s"] / summary["wall_mean_s"]
     summary["scaling_efficiency_pct"] = 100 * summary["speedup_vs_1_thread"] / summary["threads"]
     return summary
@@ -325,35 +328,44 @@ def plot_bundle(group, config_label, filename, metrics, output_dir, header, note
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
     axes = axes.flatten()
     depths = sorted(group["depth"].dropna().unique())
+    rotations = sorted(group["rotate_root_moves"].dropna().unique()) if "rotate_root_moves" in group else [0]
     cmap = plt.get_cmap(PLOT_COLOR_MAP, max(1, len(depths)))
     colors = {depth: cmap(i) for i, depth in enumerate(depths)}
+    line_styles = {0: "-", 1: "--"}
 
     for axis, (column, sd_column, title, ylabel) in zip(axes, metrics):
         if column not in group:
             axis.set_visible(False)
             continue
         for depth in depths:
-            series = group.loc[group["depth"] == depth].sort_values("threads")
-            if series.empty:
-                continue
-            y = pd.to_numeric(series[column], errors="coerce").to_numpy(dtype=float)
-            x = series["threads"].to_numpy(dtype=float)
-            yerr = (pd.to_numeric(series[sd_column], errors="coerce").fillna(0).to_numpy(dtype=float)
-                    if SHOW_ERROR_BARS and sd_column and sd_column in series
-                    else np.zeros(len(series)))
-            valid = np.isfinite(x) & np.isfinite(y)
-            if not valid.any():
-                continue
-            if "repetitions" in series:
-                n = int(series.loc[valid, "repetitions"].min())
-                label = f"depth {int(depth)} (n={n} runs)"
-            elif "positions" in series:
-                n = int(series.loc[valid, "positions"].min())
-                label = f"depth {int(depth)} (n={n} positions)"
-            else:
-                label = f"depth {int(depth)}"
-            axis.errorbar(x[valid], y[valid], yerr=yerr[valid], marker="o", linewidth=1.7,
-                          markersize=4, capsize=3, color=colors[depth], label=label)
+            for rotation in rotations:
+                mask = group["depth"] == depth
+                if "rotate_root_moves" in group:
+                    mask &= group["rotate_root_moves"] == rotation
+                series = group.loc[mask].sort_values("threads")
+                if series.empty:
+                    continue
+                y = pd.to_numeric(series[column], errors="coerce").to_numpy(dtype=float)
+                x = series["threads"].to_numpy(dtype=float)
+                yerr = (pd.to_numeric(series[sd_column], errors="coerce").fillna(0).to_numpy(dtype=float)
+                        if SHOW_ERROR_BARS and sd_column and sd_column in series
+                        else np.zeros(len(series)))
+                valid = np.isfinite(x) & np.isfinite(y)
+                if not valid.any():
+                    continue
+                if "repetitions" in series:
+                    n = int(series.loc[valid, "repetitions"].min())
+                    sample = f"(n={n} runs)"
+                elif "positions" in series:
+                    n = int(series.loc[valid, "positions"].min())
+                    sample = f"(n={n} positions)"
+                else:
+                    sample = ""
+                mode = "rotated" if rotation else "normal"
+                label = f"depth {int(depth)}, {mode} order {sample}".strip()
+                axis.errorbar(x[valid], y[valid], yerr=yerr[valid], marker="o", linewidth=1.7,
+                              markersize=4, capsize=3, color=colors[depth],
+                              linestyle=line_styles.get(int(rotation), ":"), label=label)
         axis.set_title(title)
         axis.set_xlabel("Search workers (main worker included)")
         axis.set_ylabel(ylabel)
@@ -420,8 +432,9 @@ def write_index(output_dir, inputs, figure_names, has_reference):
         "Each plotted point is the mean for one parameter configuration across completed repetitions; error bars show sample standard deviation.",
         "Runtime is wall-clock time for the 50-position suite, which is the measure of time to reach the requested depth. CPU time is summed over workers.",
         "Total nodes sum all workers; main-worker nodes show the root worker separately. Rising total nodes with falling or flat main-worker nodes means the helpers are adding work; it does not by itself mean faster progress.",
-        "Speedup compares the mean wall time with the matching one-worker configuration (same depth, TT, bucket, helper cap and build). Efficiency is speedup divided by worker count.",
+        "Speedup compares the mean wall time with the matching one-worker configuration (same depth, TT, bucket, helper cap, root-order mode and build). Efficiency is speedup divided by worker count.",
         "Move stability is calculated per position across repetitions, then averaged over positions. CP standard deviation excludes mate scores.",
+        "rotate_root_moves=1 rotates each helper's current normally ordered legal root-move list by worker index modulo legal root-move count once per root search; the main worker and below-root move ordering are unchanged.",
     ]
     if has_reference:
         definitions += [

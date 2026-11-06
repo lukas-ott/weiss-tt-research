@@ -35,6 +35,8 @@ typedef struct MovePicker {
     int bads;
     int threshold;
     bool onlyNoisy;
+    bool useRootMoveOrder;
+    int rootMoveOrderIndex, rootMoveOrderOffset;
 } MovePicker;
 
 

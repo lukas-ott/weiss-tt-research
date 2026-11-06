@@ -73,6 +73,8 @@ typedef struct Thread {
     int multiPV;
     int rootMoveCount;
     RootMove rootMoves[256];
+    Move rootMoveOrder[256];
+    int rootMoveOrderCount;
 
     // Anything below here is not zeroed out between searches
     Position pos;
