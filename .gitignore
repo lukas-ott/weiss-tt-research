@@ -93,6 +93,9 @@ dkms.conf
 __pycache__/
 *.py[cod]
 
+# Local Python virtual environment
+.venv/
+
 # Local download bundle; the reference CSVs are tracked separately.
 /results/stockfish19-reference-20261029/*.zip
 
