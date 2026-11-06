@@ -59,8 +59,11 @@ a timed-out run is incomplete and is not added to the CSV results.
 ## Helper root move-order experiment
 
 `scripts/run_move_order.py` compares the existing search order with a helper-only
-cyclic rotation. Edit its settings block to choose depth, worker counts, TT size,
-repetitions and time budget. Preview the plan without building or searching:
+cyclic rotation. It runs one configurable parameter grid; there is no separate
+high-repetition baseline phase. Edit `DEPTHS`, `THREAD_COUNTS`, `HASH_SIZES_MB`
+and `REPETITIONS` at the top of the script. For example, set `DEPTHS = [15]` for
+one depth or use `list(range(15, 24))` for depths 15 through 23. Preview the plan
+without building or searching:
 
 ```bash
 python3 scripts/run_move_order.py --dry-run
@@ -72,15 +75,15 @@ When deliberately ready to run it:
 python3 scripts/run_move_order.py
 ```
 
-The runner requests both `rotate_root_moves=0` (control) and `=1` (rotation) in
-each repetition, randomized within each repetition and using the same executable.
-Its settings mirror the previous study through its observed depth limit: 30 baseline
-repetitions, then five repetitions per depth/thread/hash combination for depths
-15–23. Helpers are uncapped in both modes (`cap_helpers=0`), so they may search
-beyond the requested benchmark depth. Since running both modes doubles the scheduled
-work, the 6.5-hour default may stop before all configurations through depth 23 finish.
-Use about 13 hours if you want roughly the same completed work as the old single-mode
-6.5-hour run; this changes only the time budget, not the helper depth policy.
+For every selected configuration and repetition, the runner requests both
+`rotate_root_moves=0` (normal-order control) and `=1` (rotation), randomized within
+the repetition and using the same executable. The default grid is depths 15–23,
+1/32/128/192 workers, 2/64/512 MiB TT, and five paired repetitions. Helpers are
+uncapped in both modes (`cap_helpers=0`), so they may search beyond the requested
+benchmark depth. The 6.5-hour default includes both move-order modes and may stop
+before every grid combination finishes. Narrow `DEPTHS`, `THREAD_COUNTS`, or
+`HASH_SIZES_MB` if you want fewer configurations; the normal-order control remains
+in every selected configuration.
 The latter rotates the complete normally ordered legal root-move sequence of each
 helper by `worker_index % root_move_count` at each root MovePicker setup. Worker 0
 keeps the normal order, and all deeper move pickers remain unchanged. Rotation may
