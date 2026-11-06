@@ -74,6 +74,13 @@ python3 scripts/run_move_order.py
 
 The runner requests both `rotate_root_moves=0` (control) and `=1` (rotation) in
 each repetition, randomized within each repetition and using the same executable.
+Its settings mirror the previous study through its observed depth limit: 30 baseline
+repetitions, then five repetitions per depth/thread/hash combination for depths
+15–23. Helpers are uncapped in both modes (`cap_helpers=0`), so they may search
+beyond the requested benchmark depth. Since running both modes doubles the scheduled
+work, the 6.5-hour default may stop before all configurations through depth 23 finish.
+Use about 13 hours if you want roughly the same completed work as the old single-mode
+6.5-hour run; this changes only the time budget, not the helper depth policy.
 The latter rotates the complete normally ordered legal root-move sequence of each
 helper by `worker_index % root_move_count` at each root MovePicker setup. Worker 0
 keeps the normal order, and all deeper move pickers remain unchanged. Rotation may
