@@ -11,7 +11,8 @@ EXPERIMENT_DIR = Path("results/experiments/20261028_depth15-thread-scaling-macos
 def summarize(runs):
     # Keep configurations and engine builds separate.
     group_columns = [
-        "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"
+        "condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
+        "rotate_root_moves", "binary_sha256"
     ]
     rows = []
 
@@ -50,6 +51,8 @@ def main():
         runs["cap_helpers"] = 0
     if "rotate_root_moves" not in runs:
         runs["rotate_root_moves"] = 0
+    if "condition" not in runs:
+        runs["condition"] = "candidate"
     summary = summarize(runs)
     output_file = EXPERIMENT_DIR / "run_summary.csv"
     summary.to_csv(output_file, index=False, float_format="%.4f")

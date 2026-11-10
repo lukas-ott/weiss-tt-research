@@ -24,7 +24,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REFERENCE = ROOT / "results/stockfish19-reference-20261029/top5.csv"
-CONFIG = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+CONFIG = ["condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
 NUMERIC_RUN = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
                "cap_helpers", "rotate_root_moves", "wall_ns", "cpu_ns", "main_nodes", "nodes"]
 NUMERIC_POSITION = ["run", "repetition", "bucket_size", "depth", "threads", "hash_mb",
@@ -128,6 +128,8 @@ def read_experiments(paths):
                 frame["cap_helpers"] = 0
             if "rotate_root_moves" not in frame:
                 frame["rotate_root_moves"] = 0
+            if "condition" not in frame:
+                frame["condition"] = "candidate"
             numeric_columns(frame, ["rotate_root_moves"])
             if "binary_sha256" not in frame:
                 frame["binary_sha256"] = "unknown"
@@ -231,7 +233,7 @@ def make_run_summary(runs):
         data["process_wall_s"] = data["process_wall_ns"] / 1e9
         aggregations["process_wall_mean_s"] = ("process_wall_s", "mean")
     summary = data.groupby(CONFIG, dropna=False).agg(**aggregations).reset_index()
-    pairing = ["bucket_size", "depth", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
+    pairing = ["condition", "bucket_size", "depth", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256"]
     paired = summary.loc[summary["threads"] == 1, pairing + ["wall_mean_s"]]
     paired = paired.rename(columns={"wall_mean_s": "one_thread_wall_mean_s"})
     summary = summary.merge(paired, on=pairing, how="left", validate="many_to_one")
@@ -384,11 +386,11 @@ def plot_bundle(group, config_label, filename, metrics, output_dir, header, note
 
 def make_figures(run_summary, stockfish_summary, stability, output_dir):
     figure_names = []
-    for keys, subset in run_summary.groupby(["bucket_size", "cap_helpers", "hash_mb", "binary_sha256"],
+    for keys, subset in run_summary.groupby(["condition", "bucket_size", "cap_helpers", "hash_mb", "binary_sha256"],
                                              dropna=False, sort=True):
-        bucket, cap, memory, binary = keys
-        label = f"bucket size {int(bucket)} | helpers capped: {bool(cap)} | TT {int(memory)} MiB | build {str(binary)[:10]}"
-        token = f"b{int(bucket)}_cap{int(cap)}_h{int(memory)}_{safe_token(str(binary)[:10])}"
+        condition, bucket, cap, memory, binary = keys
+        label = f"{condition} build | bucket size {int(bucket)} | helpers capped: {bool(cap)} | TT {int(memory)} MiB | build {str(binary)[:10]}"
+        token = f"{safe_token(str(condition))}_b{int(bucket)}_cap{int(cap)}_h{int(memory)}_{safe_token(str(binary)[:10])}"
         if CHART_GROUPS.get("scaling", True):
             perf_metrics = PERFORMANCE_METRICS
             plot_bundle(subset, label, f"scaling_{token}.png", perf_metrics, output_dir,
@@ -400,6 +402,7 @@ def make_figures(run_summary, stockfish_summary, stability, output_dir):
                 (stockfish_summary["bucket_size"] == bucket)
                 & (stockfish_summary["cap_helpers"] == cap)
                 & (stockfish_summary["hash_mb"] == memory)
+                & (stockfish_summary["condition"] == condition)
                 & (stockfish_summary["binary_sha256"] == binary)]
             if not quality.empty:
                 quality = quality.merge(subset[CONFIG].drop_duplicates(),
@@ -415,6 +418,7 @@ def make_figures(run_summary, stockfish_summary, stability, output_dir):
             (stability["bucket_size"] == bucket)
             & (stability["cap_helpers"] == cap)
             & (stability["hash_mb"] == memory)
+            & (stability["condition"] == condition)
             & (stability["binary_sha256"] == binary)]
         if not stable.empty and CHART_GROUPS.get("stability", True):
             stable = stable.merge(subset[CONFIG].drop_duplicates(),

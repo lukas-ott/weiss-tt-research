@@ -10,10 +10,12 @@ License v3.0.
 
 ## Running experiments
 
-The current runner uses the existing 50-position benchmark. Edit the settings at
-the top of [`scripts/run_experiments.py`](scripts/run_experiments.py) to select
-bucket sizes, depths, thread counts, TT memory sizes and repetitions. It builds
-one binary per bucket size and executes the configured runs sequentially.
+Use one entry point for benchmark experiments. The runner always includes Weiss
+defaults (2 entries per bucket, depth 14, one worker and 32 MiB Hash). Edit only
+`EXTRA_RUNS` in [`scripts/run_experiments.py`](scripts/run_experiments.py) to add
+configurations; unspecified settings inherit those defaults. The default and
+every extra are each run against the pinned baseline source on the same 50
+positions and identical settings, with randomized pair order.
 
 ```bash
 python3 scripts/run_experiments.py --dry-run  # preview only; no builds or searches
@@ -23,15 +25,15 @@ python3 scripts/run_experiments.py            # deliberately start the configure
 Run it after SSH-ing into the experiment server and cloning this repository.
 See [the experiment guide](docs/experiments.md) for server setup, editable settings,
 SSH disconnects, CPU/NUMA placement, output files and measurement rules. Results
-include per-position runtime, chosen move and score, plus complete raw logs and
-build/machine metadata. Generated data is ignored by Git; the short `experiment.md`
-record in each run directory is retained.
+include per-position runtime, chosen move and score, paired run and position
+summaries, raw logs and build/machine metadata. The runner ends with a
+four-game color-swapped self-play smoke check; Cute Chess CLI must be installed
+and available on `PATH` before a run starts.
+This checks basic UCI/game operation; it is not a playing-strength test.
+Generated run data is ignored by Git; each run's `experiment.md` is kept.
 
-Playing strength is measured separately from benchmark speed. Configure two UCI
-binaries and a reviewed opening PGN in
-[`scripts/run_selfplay.py`](scripts/run_selfplay.py). It previews by default; pass
-`--run` only when the paths and settings are ready. See the self-play section of
-the [experiment guide](docs/experiments.md).
+For a playing-strength claim, use a separate, longer match with a reviewed opening
+suite and statistical stopping rule. The built-in smoke match cannot estimate Elo.
 
 ## Stockfish reference and comparison
 
@@ -87,8 +89,9 @@ The worker count includes the main search worker. Rotation value `1` cyclically
 shifts each helper's normally ordered legal root moves by its worker index modulo
 the root-move count on each root search; the main worker and deeper move ordering
 remain unchanged. Omitted or zero rotation preserves the normal search. UCI option
-defaults are unchanged. See the [experiment guide](docs/experiments.md) for a paired
-runner and output details.
+defaults are unchanged. The regular runner pairs every search with the engine at
+`c55272499a460acdb7bd057ad55d495b65faaefd`, using identical build and runtime
+settings. See the [experiment guide](docs/experiments.md) for the protocol.
 
 ## Historical proof of concept
 

@@ -65,7 +65,7 @@ class RunnerTests(unittest.TestCase):
                 self.parse(text)
 
     def test_cap_modes_are_separate_and_checked_against_engine_output(self):
-        plan = runner.make_plan(caps=[0, 1])
+        plan = runner.make_plan(extra_runs=[{"name": "capped", "cap_helpers": 1}], repetitions=1)
         self.assertEqual({r["cap_helpers"] for r in plan}, {0, 1})
         expected = dict(self.expected, cap_helpers=1)
         with self.assertRaisesRegex(ValueError, "differs"):
@@ -96,44 +96,58 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(runner.BudgetExpired):
                 runner.budget_timeout(99)
 
-    def test_plan_has_every_combination_once_per_repetition_and_is_repeatable(self):
-        with patch.multiple(runner, BUCKET_SIZES=[1, 2], DEPTHS=[4, 5], THREAD_COUNTS=[1, 2],
-                            HASH_SIZES_MB=[4], REPETITIONS=2):
-            a, b = runner.make_plan(), runner.make_plan()
+    def test_plan_always_includes_defaults_and_extras_only_override_named_settings(self):
+        extras = [{"name": "threads-2", "threads": 2}, {"name": "depth-5", "depth": 5}]
+        a = runner.make_plan(extra_runs=extras, repetitions=2)
+        b = runner.make_plan(extra_runs=extras, repetitions=2)
         self.assertEqual(a, b)
-        self.assertEqual(len(a), 16)
+        self.assertEqual(len(a), 6)
         for repetition in [1, 2]:
-            combinations = {(r["bucket_size"], r["depth"], r["threads"], r["hash_mb"])
-                            for r in a if r["repetition"] == repetition}
-            self.assertEqual(len(combinations), 8)
+            group = [r for r in a if r["repetition"] == repetition]
+            self.assertEqual({r["config_name"] for r in group},
+                             {"weiss-default", "threads-2", "depth-5"})
+            default = next(r for r in group if r["config_name"] == "weiss-default")
+            threads = next(r for r in group if r["config_name"] == "threads-2")
+            depth = next(r for r in group if r["config_name"] == "depth-5")
+            self.assertEqual(threads["threads"], 2)
+            self.assertEqual(threads["hash_mb"], default["hash_mb"])
+            self.assertEqual(depth["depth"], 5)
+            self.assertEqual(depth["threads"], default["threads"])
 
-    def test_normal_plan_contains_only_uncapped_baseline_and_sweep(self):
+    def test_every_candidate_has_an_equal_work_pinned_baseline_pair(self):
         plan = runner.make_experiment_plan()
         self.assertEqual([r["run"] for r in plan], list(range(1, len(plan) + 1)))
-        self.assertEqual({r["phase"] for r in plan}, {"baseline", "depth-sweep"})
-        self.assertTrue(all(r["cap_helpers"] == 0 for r in plan))
-        sweep = [r["depth"] for r in plan if r["phase"] == "depth-sweep"]
-        self.assertEqual(sweep, sorted(sweep))
+        self.assertEqual(len(plan) % 2, 0)
+        comparisons = {}
+        for row in plan:
+            comparisons.setdefault(row["comparison_id"], {})[row["condition"]] = row
+        self.assertTrue(all(set(pair) == {"baseline", "candidate"} for pair in comparisons.values()))
+        for pair in comparisons.values():
+            baseline, candidate = pair["baseline"], pair["candidate"]
+            for field in ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
+                          "rotate_root_moves", "repetition"):
+                self.assertEqual(baseline[field], candidate[field])
+        self.assertEqual({row["config_name"] for row in plan},
+                         {"weiss-default", *(extra["name"] for extra in runner.EXTRA_RUNS)})
+        self.assertEqual({row["phase"] for row in plan}, {"default", "extra"})
 
     def test_time_budget_applies_without_a_special_flag(self):
-        plan = runner.make_plan(depths=[4], threads=[1], hashes=[4], repetitions=1)
         with patch.object(sys, "argv", ["run_experiments.py"]):
-            with patch.multiple(runner, ROOT=self.root, TIME_BUDGET_HOURS=2):
+            with patch.multiple(runner, ROOT=self.root, TIME_BUDGET_HOURS=2,
+                                BASELINE_GIT_REF=None, SELFPLAY_ENABLED=False,
+                                WEISS_DEFAULT=dict(runner.WEISS_DEFAULT, depth=4, hash_mb=4),
+                                EXTRA_RUNS=[], REPETITIONS=1):
                 with patch.object(runner, "capture", return_value=""):
-                    with patch.object(runner, "make_experiment_plan", return_value=plan):
-                        with patch.object(runner.time, "monotonic", return_value=100):
-                            with patch.object(runner, "execute") as execute:
-                                runner.main()
+                    with patch.object(runner.time, "monotonic", return_value=100):
+                        with patch.object(runner, "execute") as execute:
+                            runner.main()
         self.assertEqual(execute.call_args.args[2], 100 + 2 * 3600)
 
-    def test_deeper_sweep_settings_are_validated_before_starting(self):
-        for depths in [[16, 15], [15, 15], [14], [101], ["15"]]:
-            with self.subTest(depths=depths), patch.object(runner, "SWEEP_DEPTHS", depths):
-                with self.assertRaises(ValueError):
-                    runner.make_experiment_plan()
-
     def test_budget_stop_preserves_completed_results_and_starts_no_more_children(self):
-        plan = runner.make_plan(depths=[4], threads=[1], hashes=[4], repetitions=2)
+        with patch.multiple(runner, BASELINE_GIT_REF=None, SELFPLAY_ENABLED=False,
+                            WEISS_DEFAULT=dict(runner.WEISS_DEFAULT, depth=4, hash_mb=4),
+                            EXTRA_RUNS=[], REPETITIONS=2):
+            plan = runner.make_experiment_plan()
         output = self.root / "budget-test"
         clock = [100]
         bench_calls = []
@@ -147,7 +161,8 @@ class RunnerTests(unittest.TestCase):
                 file.write(log_text())
                 clock[0] = 111  # The first benchmark consumes the remaining budget.
 
-        with patch.multiple(runner, ROOT=self.root, BUCKET_SIZES=[2]):
+        with patch.multiple(runner, ROOT=self.root, BASELINE_GIT_REF=None,
+                            SELFPLAY_ENABLED=False):
             with patch.object(runner, "record_metadata"):
                 with patch.object(runner, "run_command", side_effect=fake_command):
                     with patch.object(runner.time, "monotonic", side_effect=lambda: clock[0]):
@@ -161,27 +176,37 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(list(csv.DictReader(file))), 50)
 
     def test_invalid_settings_fail(self):
-        with self.assertRaises(ValueError):
-            runner.make_plan(caps=[2])
-        for setting, value in [("BUCKET_SIZES", [3]), ("THREAD_COUNTS", [1, 1]),
-                               ("DEPTHS", []), ("DEPTHS", [101]), ("REPETITIONS", 0),
-                               ("TIMEOUT_SECONDS", float("nan")), ("HASH_SIZES_MB", [1])]:
-            with self.subTest(setting=setting), patch.object(runner, setting, value):
-                with self.assertRaises(ValueError):
-                    runner.make_plan()
-        with patch.object(runner.sys, "platform", "linux"), patch.object(runner, "HASH_SIZES_MB", [3]):
+        bad_extras = [[{"name": "bad-bucket", "bucket_size": 3}],
+                      [{"name": "too-many-threads", "threads": 2049}],
+                      [{"name": "too-deep", "depth": 101}],
+                      [{"name": "duplicate-default", "threads": runner.WEISS_DEFAULT["threads"]}],
+                      [{"name": "same", "threads": 2}, {"name": "same", "threads": 4}]]
+        for extras in bad_extras:
+            with self.subTest(extras=extras), self.assertRaises(ValueError):
+                runner.make_plan(extra_runs=extras)
+        with patch.object(runner.sys, "platform", "linux"), patch.object(
+                runner, "WEISS_DEFAULT", dict(runner.WEISS_DEFAULT, hash_mb=3)):
+            with self.assertRaises(ValueError):
+                runner.make_plan()
+        with patch.object(runner, "REPETITIONS", 0):
+            with self.assertRaises(ValueError):
+                runner.make_plan()
+        with patch.object(runner, "TIMEOUT_SECONDS", float("nan")):
             with self.assertRaises(ValueError):
                 runner.make_plan()
 
     def project(self):
         (self.root / "scripts").mkdir()
         (self.root / "src").mkdir()
-        script = SCRIPT.read_text().replace("BUCKET_SIZES = [2]", "BUCKET_SIZES = [1, 2]")
-        script = script.replace("DEPTHS = [15]", "DEPTHS = [4]")
-        script = script.replace("THREAD_COUNTS = [1, 2, 4, 8, 16, 32, 64, 128, 192]", "THREAD_COUNTS = [1]")
-        script = script.replace("HASH_SIZES_MB = [64]", "HASH_SIZES_MB = [4]")
-        script = script.replace("REPETITIONS = 30", "REPETITIONS = 2")
-        script = script.replace("SWEEP_DEPTHS = list(range(15, 31))", "SWEEP_DEPTHS = []")
+        script = SCRIPT.read_text().replace('"depth": 14', '"depth": 4', 1)
+        script = script.replace('"hash_mb": 32', '"hash_mb": 4', 1)
+        start = script.index("EXTRA_RUNS = [")
+        end = script.index("\n]", start) + 2
+        script = script[:start] + 'EXTRA_RUNS = [{"name": "bucket-one", "bucket_size": 1}]' + script[end:]
+        script = script.replace("REPETITIONS = 5", "REPETITIONS = 2")
+        script = script.replace("BASELINE_GIT_REF = \"c55272499a460acdb7bd057ad55d495b65faaefd\"",
+                                "BASELINE_GIT_REF = None")
+        script = script.replace("SELFPLAY_ENABLED = True", "SELFPLAY_ENABLED = False")
         target = self.root / "scripts" / "run_experiments.py"
         target.write_text(script)
         return target
@@ -192,7 +217,7 @@ class RunnerTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(target), "--dry-run"], env=env,
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("4 benchmark runs", result.stdout)
+        self.assertIn("4 paired comparisons (8 benchmark runs)", result.stdout)
         self.assertFalse((self.root / "results").exists())
 
     def fake_project(self):
@@ -253,75 +278,69 @@ if 'rev-parse' in sys.argv: print('fake-commit')
             runs = list(csv.DictReader(file))
         with (output / "positions.csv").open() as file:
             positions = list(csv.DictReader(file))
-        self.assertEqual(len(runs), 4)
-        self.assertEqual(len(positions), 200)
-        self.assertEqual(len(list((output / "bin").iterdir())), 2)
+        self.assertEqual(len(runs), 8)
+        self.assertEqual(len(positions), 400)
+        self.assertEqual(len(list((output / "bin").rglob("weiss-*"))), 4)
         self.assertEqual({r["bucket_size"] for r in runs}, {"1", "2"})
+        self.assertEqual({r["condition"] for r in runs}, {"baseline", "candidate"})
+        with (output / "comparisons.csv").open() as file:
+            self.assertEqual(len(list(csv.DictReader(file))), 4)
+        with (output / "position-comparisons.csv").open() as file:
+            paired_positions = list(csv.DictReader(file))
+        self.assertEqual(len(paired_positions), 200)
+        self.assertTrue(all(row["same_move"] == "1" for row in paired_positions))
         self.assertTrue(all((output / r["raw_log"]).is_file() for r in runs))
         self.assertTrue((output / "runner.py").is_file())
         self.assertIn("fake-commit", (output / "run-info.txt").read_text())
 
-    def cap_project(self):
-        target, env = self.fake_project()
-        cap_script = SCRIPT.with_name("run_helper_cap.py")
-        cap_target = target.with_name(cap_script.name)
-        cap_target.write_text(cap_script.read_text())
-        return cap_target, env
+    def test_cap_and_rotation_modes_are_editable_in_the_regular_plan(self):
+        plan = runner.make_experiment_plan(extra_runs=[
+            {"name": "capped-rotated", "cap_helpers": 1, "rotate_root_moves": 1}],
+            repetitions=1)
+        self.assertEqual(len(plan), 4)
+        self.assertEqual({row["cap_helpers"] for row in plan}, {0, 1})
+        self.assertEqual({row["rotate_root_moves"] for row in plan}, {0, 1})
+        self.assertTrue(all(row["condition"] in {"baseline", "candidate"} for row in plan))
+        default = [row for row in plan if row["config_name"] == "weiss-default"]
+        self.assertEqual({row["phase"] for row in default}, {"default"})
 
-    def test_separate_cap_runner_dry_run_has_only_the_small_comparison(self):
-        target, env = self.cap_project()
-        result = subprocess.run([sys.executable, str(target), "--dry-run"], env=env,
-                                capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("30 benchmark runs x 50 positions; 2 build(s).", result.stdout)
-        builds = [line for line in result.stdout.splitlines() if line.startswith("make ")]
-        self.assertEqual(len(builds), 2)
-        self.assertTrue(any("-DBENCH_CAP_HELPERS=0" in line for line in builds))
-        self.assertTrue(any("-DBENCH_CAP_HELPERS=1" in line for line in builds))
-        commands = [line for line in result.stdout.splitlines() if line.startswith("run=")]
-        self.assertEqual(len(commands), 30)
-        for line in commands:
-            self.assertIn("phase=helper-cap", line)
-            self.assertEqual(line.split()[-4:-2], ["bench", "15"])
-            self.assertIn(line.split()[-2], ["1", "32", "128"])
-            self.assertEqual(line.split()[-1], "64")
-        for workers in [1, 32, 128]:
-            for cap in [0, 1]:
-                self.assertEqual(sum(Path(shlex.split(line)[3]).name == f"weiss-b2-cap{cap}"
-                                     and shlex.split(line)[-2] == str(workers) for line in commands), 5)
-        self.assertFalse((self.root / "results").exists())
+    def test_final_selfplay_smoke_records_color_swapped_games(self):
+        output = self.root / "selfplay"
+        output.mkdir()
+        pgn = (
+            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1-0"]\n\n*\n\n'
+            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1/2-1/2"]\n\n*\n\n'
+            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1/2-1/2"]\n\n*\n\n'
+            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1-0"]\n\n*\n\n'
+        )
 
-    def test_cap_runner_builds_both_variants_and_keeps_all_positions(self):
-        target, env = self.cap_project()
-        # This is a fake engine, so allow its 128-worker-labelled output on any laptop.
-        target.write_text(target.read_text().replace("def main():",
-                          "def main():\n    runner.os.sched_getaffinity = lambda _: set(range(192))"))
-        result = subprocess.run([sys.executable, str(target)], env=env,
-                                capture_output=True, text=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        output = next((self.root / "results" / "experiments").iterdir())
-        self.assertRegex(output.name, r"^\d{8}_helper-depth-cap(?:_\d{2})?$")
-        with (output / "runs.csv").open() as file:
-            runs = list(csv.DictReader(file))
-        with (output / "positions.csv").open() as file:
-            positions = list(csv.DictReader(file))
-        self.assertEqual(len(runs), 30)
-        self.assertEqual(len(positions), 1500)
-        self.assertEqual(len(list((output / "bin").iterdir())), 2)
-        self.assertEqual({r["phase"] for r in runs}, {"helper-cap"})
-        self.assertEqual({r["cap_helpers"] for r in runs}, {"0", "1"})
-        self.assertEqual({r["depth"] for r in runs}, {"15"})
-        self.assertEqual({r["hash_mb"] for r in runs}, {"64"})
-        self.assertEqual({r["threads"] for r in runs}, {"1", "32", "128"})
-        for cap in ["0", "1"]:
-            selected = [r for r in runs if r["cap_helpers"] == cap]
-            self.assertEqual(len({r["binary_sha256"] for r in selected}), 1)
-            self.assertTrue(all(f"weiss-b2-cap{cap} bench" in r["command"] for r in selected))
-            self.assertTrue(all(len(r["command"].split()) == 5 for r in selected))
-        self.assertEqual(len({r["binary_sha256"] for r in runs}), 2)
-        self.assertEqual((output / "runner.py").read_text(), target.read_text())
-        self.assertTrue((output / "run_experiments.py").is_file())
-        self.assertTrue((output / "status.txt").read_text().startswith("complete"))
+        def fake_run(command, log, timeout):
+            Path(command[command.index("-pgnout") + 1]).write_text(pgn)
+            log.write("fake Cute Chess completed four games\n")
+
+        with patch.object(runner.shutil, "which", return_value="/fake/cutechess-cli"):
+            with patch.object(runner, "run_command", side_effect=fake_run):
+                result = runner.run_selfplay_smoke(
+                    output, self.root / "baseline", self.root / "candidate", None)
+        self.assertEqual(result, "completed 4 games; smoke test only")
+        with (output / "selfplay-summary.csv").open() as file:
+            summary = next(csv.DictReader(file))
+        self.assertEqual((summary["candidate_wins"], summary["draws"],
+                          summary["candidate_losses"]), ("1", "2", "1"))
+        self.assertIn("complete: 4 games", (output / "selfplay-status.txt").read_text())
+
+    def test_required_cutechess_is_checked_before_any_benchmark_starts(self):
+        with patch.object(sys, "argv", ["run_experiments.py"]):
+            with patch.multiple(runner, ROOT=self.root, SELFPLAY_ENABLED=True,
+                                SELFPLAY_REQUIRED=True, BASELINE_GIT_REF=None,
+                                WEISS_DEFAULT=dict(runner.WEISS_DEFAULT, depth=4, hash_mb=4),
+                                EXTRA_RUNS=[], REPETITIONS=1):
+                with patch.object(runner, "capture", return_value=""):
+                    with patch.object(runner.shutil, "which", return_value=None):
+                        with patch.object(runner, "execute") as execute:
+                            with self.assertRaisesRegex(ValueError, "cutechess-cli"):
+                                runner.main()
+        execute.assert_not_called()
 
     def test_failed_run_keeps_prior_rows_and_failing_raw_log(self):
         target, env = self.fake_project()

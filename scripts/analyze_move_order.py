@@ -26,8 +26,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 
 # ========================== EDIT ANALYSIS SETTINGS HERE =========================
-# Leave as None to auto-select the newest results/experiments/move-order-* folder.
-# Or set an exact folder, e.g. ROOT / "results/experiments/move-order-20261106T000000Z".
+# Leave as None to auto-select the newest experiment containing both rotation modes.
+# Or set an exact results folder in this editable setting.
 EXPERIMENT_DIR = None
 OUTPUT_DIR = None  # None writes to <experiment>/analysis-move-order.
 FIGURE_DPI = 160
@@ -35,7 +35,7 @@ SHOW_ERROR_BARS = True  # ±1 sample SD across paired repetitions.
 # ================================================================================
 
 CONFIG = [
-    "bucket_size", "phase", "depth", "threads", "hash_mb",
+    "condition", "bucket_size", "phase", "depth", "threads", "hash_mb",
     "cap_helpers", "binary_sha256",
 ]
 PAIR_KEYS = CONFIG + ["repetition"]
@@ -58,21 +58,30 @@ def parse_args():
     args.output = args.output or OUTPUT_DIR
     if args.experiment is None:
         candidates = sorted(
-            (ROOT / "results" / "experiments").glob("move-order-*"),
+            (ROOT / "results" / "experiments").glob("*"),
             key=lambda path: path.stat().st_mtime if path.is_dir() else 0,
             reverse=True,
         )
         args.experiment = next(
-            (path for path in candidates
-             if (path / "runs.csv").is_file() and (path / "positions.csv").is_file()),
+            (path for path in candidates if (path / "runs.csv").is_file()
+             and (path / "positions.csv").is_file() and has_both_rotation_modes(path)),
             None,
         )
     if args.experiment is None:
         parser.error(
-            "No move-order results found. Run scripts/run_move_order.py first, "
+            "No experiment with both root-move rotation values was found. Set ROOT_MOVE_ROTATIONS = [0, 1] "
+            "in scripts/run_experiments.py, run it, "
             "or set EXPERIMENT_DIR / pass its results folder."
         )
     return args
+
+
+def has_both_rotation_modes(path):
+    try:
+        values = pd.read_csv(path / "runs.csv", usecols=["rotate_root_moves"])
+    except (OSError, ValueError, pd.errors.ParserError):
+        return False
+    return set(values["rotate_root_moves"].dropna().unique()) == {0, 1}
 
 
 def resolve_path(path):
@@ -90,6 +99,9 @@ def read_data(experiment_dir):
 
     runs = pd.read_csv(runs_path)
     positions = pd.read_csv(positions_path)
+    for frame in (runs, positions):
+        if "condition" not in frame:
+            frame["condition"] = "candidate"
     required_run = set(CONFIG + ["repetition", "run", "rotate_root_moves"] + RUN_METRICS)
     required_position = set(
         POSITION_KEYS + ["rotate_root_moves", "bestmove", "score_type", "score"]
@@ -315,10 +327,10 @@ def make_figures(summary, output_dir):
     performance_figures = []
     quality_figures = []
     group_columns = [
-        "bucket_size", "phase", "hash_mb", "cap_helpers", "binary_sha256",
+        "condition", "bucket_size", "phase", "hash_mb", "cap_helpers", "binary_sha256",
     ]
     for keys, subset in summary.groupby(group_columns, dropna=False, sort=True):
-        bucket, phase, memory, cap, binary = keys
+        condition, bucket, phase, memory, cap, binary = keys
         depths = sorted(subset["depth"].unique())
         cmap = plt.get_cmap("turbo", max(1, len(depths)))
         colors = {depth: cmap(i) for i, depth in enumerate(depths)}
@@ -371,12 +383,12 @@ def make_figures(summary, output_dir):
             axis.legend(fontsize=8, frameon=False)
 
         label = (
-            f"bucket {int(bucket)} | phase {phase} | TT {int(memory)} MiB | "
+            f"{condition} build | bucket {int(bucket)} | phase {phase} | TT {int(memory)} MiB | "
             f"helpers capped {int(cap)} | build {str(binary)[:10]}"
         )
         fig.suptitle(label, fontsize=12)
         token = safe_token(
-            f"performance_b{bucket}_{phase}_h{memory}_cap{cap}_{str(binary)[:10]}"
+            f"performance_{condition}_b{bucket}_{phase}_h{memory}_cap{cap}_{str(binary)[:10]}"
         )
         filename = f"{token}.png"
         fig.savefig(output_dir / filename, dpi=FIGURE_DPI, bbox_inches="tight")
@@ -432,7 +444,7 @@ def write_html(
     )
     definitions = [
         "Rotation off (0) is the normal Weiss move order. Rotation on (1) changes only helper root-move order; the main worker and below-root move ordering stay unchanged.",
-        "Runs are paired by phase, repetition, bucket size, requested depth, worker count, TT size, helper-cap setting, and binary hash. Per-position rows are additionally paired by position.",
+        "Runs are paired within each baseline/candidate build by phase, repetition, bucket size, requested depth, worker count, TT size, helper-cap setting, and binary hash. Per-position rows are additionally paired by position.",
         "Wall time is the benchmark's summed time for its 50 positions to reach the requested depth. It is the primary performance measure here. Positive paired improvement means rotated mode took less time: (normal − rotated) / normal × 100.",
         "Where shown, error bars are ±1 sample standard deviation across paired repetitions. They describe run-to-run spread; they are not confidence intervals.",
         "Total-node and main-worker-node changes describe how the search differed. A lower node count is not automatically a better result; compare it with wall time and the requested-depth completion.",
@@ -444,7 +456,7 @@ def write_html(
         f"<li>{html.escape(item)}</li>" for item in definitions
     )
     phase_rows = summary.groupby(
-        ["phase", "depth", "threads", "hash_mb"], dropna=False
+        ["condition", "phase", "depth", "threads", "hash_mb"], dropna=False
     ).size().reset_index(name="paired configurations")
     phase_table = phase_rows.to_html(index=False, border=0, classes="data-table")
     page = f"""<!doctype html>

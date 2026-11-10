@@ -11,7 +11,8 @@ EXPERIMENT_DIR = Path("results/experiments/20261028_depth15-thread-scaling-macos
 def summarize(positions):
     # Keep different positions, configurations and engine builds separate.
     group_columns = [
-        "bucket_size", "depth", "threads", "hash_mb", "cap_helpers", "rotate_root_moves", "binary_sha256", "position"
+        "condition", "bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
+        "rotate_root_moves", "binary_sha256", "position"
     ]
     rows = []
 
@@ -49,6 +50,8 @@ def main():
         positions["cap_helpers"] = 0
     if "rotate_root_moves" not in positions:
         positions["rotate_root_moves"] = 0
+    if "condition" not in positions:
+        positions["condition"] = "candidate"
     summary = summarize(positions)
     output_file = EXPERIMENT_DIR / "position_summary.csv"
     summary.to_csv(output_file, index=False, float_format="%.4f")
