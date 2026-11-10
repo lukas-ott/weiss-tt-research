@@ -23,15 +23,16 @@ The current replacement is [`scripts/run_experiments.py`](../scripts/run_experim
 see the [experiment guide](experiments.md).
 
 The original `runs.csv`, metadata and available raw logs remain under
-`results/poc/runs/`. Raw logs were ignored by Git and must be retained separately.
-The current engine suppresses thinking output during timing and uses more precise
-clocks, so collect a fresh baseline rather than mixing these historical timings
-with new runs.
+[`results/poc/runs/20261016_tt-associativity-macos/`](../results/poc/runs/20261016_tt-associativity-macos/).
+The folder's `experiment.md` records its question, protocol, results and limits.
+Raw logs were ignored by Git and must be retained separately. The current engine
+suppresses thinking output during timing and uses more precise clocks, so collect
+a fresh baseline rather than mixing these historical timings with new runs.
 
 ## Thread-scaling observations
 
-The table below is calculated from the recorded [40 individual runs](../results/poc/runs/20261016T133602040691Z/runs.csv).
-The [run metadata](../results/poc/runs/20261016T133602040691Z/run-info.txt)
+The table below is calculated from the recorded [40 individual runs](../results/poc/runs/20261016_tt-associativity-macos/runs.csv).
+The [run metadata](../results/poc/runs/20261016_tt-associativity-macos/run-info.txt)
 records the source state, commands, platform, and binary hashes. Values are
 arithmetic means over five runs per row; the time range shows the fastest and
 slowest run. NPS is the mean of the per-run NPS values printed by Weiss.

@@ -29,7 +29,27 @@ def main():
     plan = runner.make_plan(buckets=[BUCKET_SIZE], depths=[DEPTH],
                             threads=THREAD_COUNTS, hashes=[HASH_MB], caps=[0, 1],
                             repetitions=REPETITIONS, phase="helper-cap")
-    runner.main(plan=plan, runner_file=Path(__file__), results_prefix="helper-cap-")
+    runner.main(
+        plan=plan,
+        runner_file=Path(__file__),
+        experiment_slug="helper-depth-cap",
+        experiment_record={
+            "title": "Helper search depth cap",
+            "question": "Does preventing helpers from searching beyond the requested benchmark depth change time to depth or aggregate search work?",
+            "hypothesis": "A helper depth cap may reduce wasted deeper work but can also remove useful parallel search information; the direction of the wall-time change is empirical.",
+            "controls": [
+                "Capped and uncapped runs use the same engine source and benchmark positions.",
+                "The only intended treatment difference is BENCH_CAP_HELPERS.",
+                "The plan pairs both cap modes across the same thread counts and repetitions.",
+                "Runs are sequential and inherit the same machine placement policy.",
+            ],
+            "limitations": [
+                "This is a benchmark-time comparison, not a playing-strength test.",
+                "At one worker, the helper cap has no effect because there are no helpers.",
+                "Results apply to the requested depth, TT size, engine revision and machine used.",
+            ],
+        },
+    )
 
 
 if __name__ == "__main__":

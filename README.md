@@ -24,8 +24,14 @@ Run it after SSH-ing into the experiment server and cloning this repository.
 See [the experiment guide](docs/experiments.md) for server setup, editable settings,
 SSH disconnects, CPU/NUMA placement, output files and measurement rules. Results
 include per-position runtime, chosen move and score, plus complete raw logs and
-build/machine metadata. Generated experiment directories are ignored by Git and
-must be backed up separately.
+build/machine metadata. Generated data is ignored by Git; the short `experiment.md`
+record in each run directory is retained.
+
+Playing strength is measured separately from benchmark speed. Configure two UCI
+binaries and a reviewed opening PGN in
+[`scripts/run_selfplay.py`](scripts/run_selfplay.py). It previews by default; pass
+`--run` only when the paths and settings are ready. See the self-play section of
+the [experiment guide](docs/experiments.md).
 
 ## Stockfish reference and comparison
 

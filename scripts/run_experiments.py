@@ -31,6 +31,7 @@ REPETITIONS = 30                   # Each combination is run this many times.
 ORDER_SEED = 2026                  # Shuffle configurations within each repetition.
 CC = "gcc"
 TIMEOUT_SECONDS = 300              # Whole 50-position process, including TT clearing; None disables.
+EXPERIMENT_SLUG = "tt-benchmark-sweep"  # Used in results/experiments/YYYYMMDD_<slug>/.
 
 # Applies to every invocation. Completed runs are saved before the budget expires.
 TIME_BUDGET_HOURS = 6.5             # Includes builds and process startup/TT clearing.
@@ -54,6 +55,80 @@ OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$"
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def experiment_directory(results_root, slug, now=None):
+    """Return a dated, descriptive output path without creating it."""
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise ValueError("Experiment slug must use lowercase letters, numbers and hyphens")
+    date = (datetime.now(timezone.utc) if now is None else now).strftime("%Y%m%d")
+    stem = f"{date}_{slug}"
+    candidate = Path(results_root) / stem
+    suffix = 2
+    while candidate.exists():
+        candidate = Path(results_root) / f"{stem}_{suffix:02d}"
+        suffix += 1
+    return candidate
+
+
+def _markdown_value(value):
+    if isinstance(value, dict):
+        return "; ".join(f"{key}: {item}" for key, item in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(map(str, value))
+    return str(value)
+
+
+def write_experiment_md(output_dir, *, title, question, hypothesis, settings,
+                        controls, source_commit, source_status, runner_file,
+                        binaries=(), status="planned", results="Pending.",
+                        conclusion="Pending manual interpretation.", limitations=()):
+    """Write the concise, reproducible record that accompanies every run."""
+    lines = [f"# {title}", "", f"- **Run ID:** `{Path(output_dir).name}`",
+             f"- **Status:** {status}", "", "## Question", "", question, "",
+             "## Hypothesis", "", hypothesis, "", "## Settings", ""]
+    lines.extend(f"- **{key}:** {_markdown_value(value)}" for key, value in settings.items())
+    lines += ["", "## Controls", ""]
+    lines.extend(f"- {item}" for item in controls)
+    lines += ["", "## Source and build identifiers", "",
+              f"- Source commit: `{source_commit}`",
+              f"- Source status before run: {source_status or '(clean)' }",
+              f"- Runner snapshot: `{runner_file}`"]
+    if binaries:
+        lines += [f"- `{name}` SHA-256: `{digest}`" for name, digest in binaries]
+    lines += ["", "## Results", "", results, "", "## Conclusion", "", conclusion,
+              "", "## Limitations", ""]
+    lines.extend(f"- {item}" for item in limitations)
+    Path(output_dir, "experiment.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def benchmark_results_text(output_dir):
+    """Summarize completed benchmark rows without making a significance claim."""
+    path = Path(output_dir) / "runs.csv"
+    if not path.exists():
+        return "No completed benchmark runs have been recorded yet."
+    with path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    if not rows:
+        return "No complete benchmark runs were recorded."
+    dimensions = ("bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
+                  "rotate_root_moves")
+    groups = {}
+    for row in rows:
+        key = tuple(int(row.get(name) or 0) for name in dimensions)
+        group = groups.setdefault(key, {"wall": [], "nodes": [], "main_nodes": []})
+        group["wall"].append(int(row["wall_ns"]) / 1e9)
+        group["nodes"].append(int(row["nodes"]))
+        group["main_nodes"].append(int(row["main_nodes"]))
+    lines = [f"Completed benchmark runs: {len(rows)}.", "",
+             "| Bucket | Depth | Workers | TT MiB | Cap | Rotation | Mean wall s | Mean nodes | Mean main nodes |",
+             "|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for key, values in sorted(groups.items()):
+        means = [sum(values[name]) / len(values[name])
+                 for name in ("wall", "nodes", "main_nodes")]
+        lines.append("| " + " | ".join(map(str, key)) + " | "
+                     + f"{means[0]:.4f} | {means[1]:.0f} | {means[2]:.0f} |")
+    return "\n".join(lines)
 
 
 def capture(command, required=False):
@@ -237,6 +312,7 @@ def record_metadata(output_dir, deadline=None, runner_file=None):
         except OSError:
             pass
     (output_dir / "run-info.txt").write_text("\n".join(details) + "\n", encoding="utf-8")
+    return {"commit": commit, "status": status}
 
 
 class BudgetExpired(RuntimeError):
@@ -273,15 +349,57 @@ def run_command(command, file, timeout):
         raise subprocess.CalledProcessError(code, command)
 
 
-def execute(plan, output_dir, deadline=None, runner_file=None):
+def execute(plan, output_dir, deadline=None, runner_file=None, experiment_record=None):
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "raw").mkdir()
     (output_dir / "bin").mkdir()
     status = output_dir / "status.txt"
     status.write_text("building\n")
     print(f"Results: {output_dir}", flush=True)
+    record = experiment_record or {}
+    source = {"commit": "not recorded", "status": "not recorded"}
+    built_binaries = []
+
+    def update_record(state, results=None, conclusion=None):
+        settings = {
+            "Planned benchmark processes": len(plan),
+            "Bucket sizes": sorted({run["bucket_size"] for run in plan}),
+            "Depths": sorted({run["depth"] for run in plan}),
+            "Total workers": sorted({run["threads"] for run in plan}),
+            "TT sizes (MiB)": sorted({run["hash_mb"] for run in plan}),
+            "Helper caps": sorted({run["cap_helpers"] for run in plan}),
+            "Root move rotation": sorted({run["rotate_root_moves"] for run in plan}),
+            "Repetitions": sorted({run["repetition"] for run in plan}),
+            "Timeout": TIMEOUT_SECONDS,
+            "Time budget (hours)": TIME_BUDGET_HOURS,
+        }
+        write_experiment_md(
+            output_dir,
+            title=record.get("title", "Weiss benchmark experiment"),
+            question=record.get("question", "How do the selected settings affect benchmark time to depth?"),
+            hypothesis=record.get("hypothesis", "Additional workers may reduce wall time at first, with diminishing returns at higher counts."),
+            settings=settings,
+            controls=record.get("controls", [
+                "The same ordered 50-position benchmark is used for every run.",
+                "Runs execute sequentially with one executable per bucket size.",
+                f"Configuration order is randomized with seed {ORDER_SEED}.",
+                "CPU and NUMA placement are inherited from the invoking shell or scheduler.",
+            ]),
+            source_commit=source["commit"], source_status=source["status"],
+            runner_file=Path(runner_file or __file__).name,
+            binaries=built_binaries, status=state,
+            results=results or benchmark_results_text(output_dir),
+            conclusion=conclusion or "Pending manual interpretation. Descriptive means do not establish statistical significance or causality.",
+            limitations=record.get("limitations", [
+                "Parallel searches may visit different numbers of nodes and may not be deterministic.",
+                "Recorded means summarize completed runs only; incomplete configurations are not comparable as full repetitions.",
+                "This benchmark measures time to a requested depth, not playing strength.",
+            ]),
+        )
+
     try:
-        record_metadata(output_dir, deadline, runner_file)
+        source.update(record_metadata(output_dir, deadline, runner_file) or {})
+        update_record("building")
         with (output_dir / "plan.csv").open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=RUN_FIELDS)
             writer.writeheader()
@@ -298,6 +416,8 @@ def execute(plan, output_dir, deadline=None, runner_file=None):
                 with log.open("w") as file:
                     run_command(command, file, budget_timeout(deadline))
                 binaries[bucket, cap] = (binary, hashlib.sha256(binary.read_bytes()).hexdigest())
+                built_binaries.append((binary.name, binaries[bucket, cap][1]))
+        update_record("running", results="Builds completed; benchmark runs are in progress.")
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
                           "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
                           "helper_nodes_beyond_depth", "helper_max_started_iteration",
@@ -341,12 +461,19 @@ def execute(plan, output_dir, deadline=None, runner_file=None):
         if isinstance(error, BudgetExpired) or (deadline is not None and time.monotonic() >= deadline):
             label = "budget-limited"
         status.write_text(f"{label}: {error}\n")
+        update_record(
+            label,
+            results=f"{benchmark_results_text(output_dir)}\n\nStop reason: {error}",
+            conclusion="Incomplete experiment. Interpret only completed, validated runs and record the stop reason before drawing conclusions.",
+        )
         raise
     status.write_text(f"complete {utc_now()}\n")
+    update_record("complete", conclusion=record.get(
+        "conclusion", "Pending manual interpretation. Review repetitions and uncertainty before drawing a scaling conclusion."))
     print(f"Completed {len(plan)} runs. Results: {output_dir}", flush=True)
 
 
-def main(plan=None, runner_file=None, results_prefix=""):
+def main(plan=None, runner_file=None, experiment_slug=EXPERIMENT_SLUG, experiment_record=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan only; no files, builds, or benchmarks")
@@ -370,13 +497,17 @@ def main(plan=None, runner_file=None, results_prefix=""):
         return
     if hasattr(os, "sched_getaffinity") and max(r["threads"] for r in plan) > len(os.sched_getaffinity(0)):
         raise ValueError("Requested threads exceed this process's allowed CPUs; check your allocation")
-    if capture(["git", "ls-files", "--others", "--exclude-standard", "--", "src"], required=True):
-        raise ValueError("Untracked files under src/: git-add source changes before recording an experiment")
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    untracked_src = capture(["git", "ls-files", "--others", "--exclude-standard", "--", "src"], required=True)
+    untracked_build_inputs = [name for name in untracked_src.splitlines()
+                              if Path(name).suffix.lower() != ".md"]
+    if untracked_build_inputs:
+        raise ValueError("Untracked build inputs under src/: git-add source changes before recording an experiment: "
+                         + ", ".join(untracked_build_inputs))
+    output_dir = experiment_directory(ROOT / "results" / "experiments", experiment_slug)
     deadline = time.monotonic() + TIME_BUDGET_HOURS * 3600
     try:
-        execute(plan, ROOT / "results" / "experiments" / f"{results_prefix}{run_id}",
-                deadline, runner_file=runner_file)
+        execute(plan, output_dir, deadline, runner_file=runner_file,
+                experiment_record=experiment_record)
     except (BudgetExpired, subprocess.TimeoutExpired):
         print("Time limit reached. Completed benchmarks remain in runs.csv/positions.csv; "
               "unfinished runs are excluded from the CSVs, and their logs are retained.", flush=True)

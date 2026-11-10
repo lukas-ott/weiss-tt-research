@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 # SETTINGS: change this to ONE experiment folder containing positions.csv.
-EXPERIMENT_DIR = Path("results/experiments/20261028T143204152830Z")
+EXPERIMENT_DIR = Path("results/experiments/20261028_depth15-thread-scaling-macos")
 
 
 def summarize(positions):

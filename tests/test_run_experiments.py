@@ -300,7 +300,7 @@ if 'rev-parse' in sys.argv: print('fake-commit')
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         output = next((self.root / "results" / "experiments").iterdir())
-        self.assertTrue(output.name.startswith("helper-cap-"))
+        self.assertRegex(output.name, r"^\d{8}_helper-depth-cap(?:_\d{2})?$")
         with (output / "runs.csv").open() as file:
             runs = list(csv.DictReader(file))
         with (output / "positions.csv").open() as file:

@@ -12,7 +12,11 @@ The raw difference between their scores is therefore not a calibrated chess erro
 
 ## Data and reproduction
 
-- Weiss batch: `20261028T144854664254Z`, run on `kiloampere`, Ampere-1a ARM64,
+- The original server directory used the timestamp name `20261028T144854664254Z`.
+  That raw directory is not present in this checkout, so only its canonical
+  descriptive label is updated here; the server directory itself has not been
+  renamed from this Mac.
+- Weiss batch: `20261028_depth15-thread-scaling-kiloampere`, run on `kiloampere`, Ampere-1a ARM64,
   192 physical cores, four NUMA nodes.
 - Fixed parameters: nominal depth 15, 64 MiB TT, two entries per bucket.
   Threads: 1, 2, 4, 8, 16, 32, 64 and 128.
@@ -38,7 +42,7 @@ binary hash was checked too.
 
 To regenerate, make the original batch available locally and select its folder
 with `EXPERIMENT_DIR` near the top of `scripts/compare_stockfish.py`. Its default is
-`results/experiments/20261028T144854664254Z`, containing `positions.csv`.
+`results/experiments/20261028_depth15-thread-scaling-kiloampere`, containing `positions.csv`.
 Install the existing analysis dependency in your environment, then run from the
 repository root:
 

@@ -86,8 +86,11 @@ dkms.conf
 *.tmp
 *.log
 
-# Generated experiment bundles (back up the whole directory separately)
-/results/experiments/
+# Generated experiment data stays local; keep only the short experiment record in Git.
+/results/experiments/*
+!/results/experiments/*/
+/results/experiments/*/**
+!/results/experiments/*/experiment.md
 
 # Python bytecode
 __pycache__/

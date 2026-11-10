@@ -9,7 +9,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 
 # ============================= EDIT SETTINGS HERE =============================
-EXPERIMENT_DIR = ROOT / "results/experiments/20261028T144854664254Z"
+EXPERIMENT_DIR = ROOT / "results/experiments/20261028_depth15-thread-scaling-kiloampere"
 REFERENCE_DIR = ROOT / "results/stockfish19-reference-20261029"
 OUTPUT_DIR = ROOT / "results/stockfish-comparison/kiloampere-20261028"
 NEAR_BEST_CP = 25  # Descriptive tolerance, in Stockfish's own score scale.

@@ -2,7 +2,7 @@
 """Summarize Weiss experiment CSVs and generate a local HTML/PNG analysis suite.
 
 Example:
-    python3 scripts/visualize_experiments.py results/experiments/20261028T143204152830Z
+    python3 scripts/visualize_experiments.py results/experiments/20261028_depth15-thread-scaling-macos
     python3 scripts/visualize_experiments.py results/experiments/run-a results/experiments/run-b \
         --reference results/stockfish19-reference-20261029/top5.csv
 
@@ -32,7 +32,7 @@ NUMERIC_POSITION = ["run", "repetition", "bucket_size", "depth", "threads", "has
 
 # ============================== EDIT SETTINGS HERE =============================
 # Put experiment folders here to run the script without command-line arguments.
-# Example: [ROOT / "results/experiments/20261028T143204152830Z"]
+# Example: [ROOT / "results/experiments/20261028_depth15-thread-scaling-macos"]
 EXPERIMENT_DIRS = []
 REFERENCE_CSV = DEFAULT_REFERENCE  # Set to None to skip Stockfish comparisons.
 OUTPUT_DIR = None                 # None writes to analysis/ inside the first experiment.

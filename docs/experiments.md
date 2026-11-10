@@ -95,8 +95,9 @@ Rotation has a runtime benchmark argument and is recorded in `BENCH_CONFIG`,
 `plan.csv`, `runs.csv` and `positions.csv`. The standard scaling runner leaves it
 off unless `ROOT_MOVE_ROTATIONS` is deliberately changed. Existing CSVs without the
 column are interpreted as unrotated. The dedicated runner writes to a
-`move-order-<UTC timestamp>` results folder. It launches searches only when invoked
-without `--dry-run`.
+`results/experiments/YYYYMMDD_helper-root-move-order/` (with a numeric suffix if
+needed). Each run includes an `experiment.md` record. It launches searches only
+when invoked without `--dry-run`.
 
 Combinations are shuffled separately within each repetition using `ORDER_SEED`.
 The exact order is saved before building. A fixed seed reproduces ordering; it
@@ -117,8 +118,9 @@ python3 scripts/run_experiments.py
 ```
 
 Do not edit the engine sources or start another runner in the same checkout while
-it is building/running. Each invocation creates a new timestamped output folder.
-The runner has no automatic resume or background-job management.
+it is building/running. Each invocation creates a new dated, descriptive output
+folder. The slug is editable in the corresponding runner settings block. The runner
+has no automatic resume or background-job management.
 
 ## SSH disconnects and placement
 
@@ -147,7 +149,8 @@ that the server was otherwise idle.
 
 ## Output and validation
 
-Each invocation creates `results/experiments/<UTC timestamp>/`:
+Each invocation creates `results/experiments/YYYYMMDD_<experiment-slug>/` (adding
+`_02`, `_03`, etc. if that name already exists):
 
 | File | Contents |
 |---|---|
@@ -159,6 +162,7 @@ Each invocation creates `results/experiments/<UTC timestamp>/`:
 | `build-bN.log`, `build-commands.txt` | Compiler output and exact build commands |
 | `run-info.txt` | Git revision/status, system/compiler metadata, affinity, available NUMA information |
 | `source.patch`, `runner.py` | Tracked changes relative to the revision, plus the exact runner/settings |
+| `experiment.md` | Question, hypothesis, settings, controls, source/build IDs, results and limitations |
 | `status.txt` | Building, current run, complete, failed, or interrupted |
 
 CSV rows include the run number, repetition, parameters (including helper root
@@ -176,12 +180,19 @@ rows, the failing raw log and a non-complete status. `Ctrl-C` also preserves
 completed rows. A killed process may leave status as `running`; that folder is
 not a completed experiment. No partial run is silently converted into valid data.
 
-The entire output directory is ignored by Git, including binaries and raw logs.
-Archive/copy the whole directory separately; pushing the repository does not back
-up experimental results. Keep the recorded source revision available. Untracked
-source files under `src/` must be added to Git before running so the source patch
-can capture their contents. Tracked local edits are recorded; a committed version
-is easier to reproduce.
+Generated CSVs, binaries, raw logs and source snapshots are ignored by Git. The
+short `experiment.md` is retained by Git; archive/copy the full directory to
+preserve measurements and binaries. Pushing the repository does not back up the
+full experiment. Keep the recorded source revision available. Untracked build
+inputs under `src/` must be added to Git before running so the source patch can
+capture their contents; `src/notes.md` is documentation and does not block a run.
+The runner writes descriptive results, but leaves the interpretation pending.
+After analyzing the data, update `experiment.md` with the conclusion, uncertainty
+and limitations before treating the record as complete.
+
+The descriptive record for the earlier five-repetition Mac depth-15 pilot is
+[`20261028_depth15-thread-scaling-macos/experiment.md`](../results/experiments/20261028_depth15-thread-scaling-macos/experiment.md).
+Its larger run bundle remains local and ignored.
 
 ## What to compare
 
@@ -247,6 +258,48 @@ The experiment runners use only the Python standard library. Pandas is needed fo
 the summary/comparison scripts; Matplotlib is additionally needed for
 `scripts/visualize_experiments.py`.
 
+## Playing-strength self-play
+
+Benchmark time-to-depth and playing strength answer different questions. Use
+[`scripts/run_selfplay.py`](../scripts/run_selfplay.py) for a separate match
+between two UCI engine builds. It uses no Python packages, but requires the
+[Cute Chess CLI](https://github.com/cutechess/cutechess) executable on the machine
+where the match runs.
+
+Edit the settings block in the script:
+
+- Point `BASELINE` and `VARIANT` to the two engine binaries. Keep `Threads`,
+  `Hash`, and other relevant UCI options equal unless that setting is the
+  treatment.
+- Set `OPENINGS_PGN` to a reviewed opening PGN suite. The 50 tactical benchmark
+  positions are not a playing-strength opening suite.
+- Keep `OPENING_PLIES`, `TIME_CONTROL`, `MAX_GAMES`, and `SPRT` fixed when
+  comparing variants. The checked-in values are starting settings, not calibrated
+  thesis results.
+
+Preview the command (no games start):
+
+```bash
+python3 scripts/run_selfplay.py
+```
+
+After configuring both binaries and the opening file, explicitly start the match:
+
+```bash
+python3 scripts/run_selfplay.py --run
+```
+
+The protocol uses one game at a time, pairs openings with colors swapped, saves
+`games.pgn`, preserves the complete `cutechess.log`, and requests an SPRT with
+editable Elo bounds. The variant is listed first because Cute Chess's SPRT
+hypotheses are oriented to player 1. Cute Chess can stop after an SPRT decision or
+at the game limit. Its log is authoritative for the decision; inspect `summary.csv`,
+`game-results.csv` and the PGN before interpreting the result. Each output folder
+contains its own `experiment.md`, binary/opening hashes and exact command.
+
+See the [Cute Chess CLI manual](https://github.com/cutechess/cutechess/blob/master/docs/cutechess-cli.6)
+for the documented `-repeat`, `-openings`, `-rounds`, `-pgnout` and `-sprt` options.
+
 ## Compare moves and scores with Stockfish
 
 The saved [Stockfish 19 reference](../results/stockfish19-reference-20261029/README.md)
@@ -259,8 +312,9 @@ python3 scripts/compare_stockfish.py
 
 Edit `EXPERIMENT_DIR`, `REFERENCE_DIR`, `OUTPUT_DIR` and `NEAR_BEST_CP` in the marked
 settings block for another batch. The default input is the original kiloampere
-batch under `results/experiments/20261028T144854664254Z`; it must be available
-locally, or you must select its location. Raw server inputs are not uploaded to
+batch under
+`results/experiments/20261028_depth15-thread-scaling-kiloampere`; it must be
+available locally, or you must select its location. Raw server inputs are not uploaded to
 Git. Outputs are replaced on rerun; input CSVs are preserved.
 
 The script saves per-observation, per-position, per-repetition and per-configuration
