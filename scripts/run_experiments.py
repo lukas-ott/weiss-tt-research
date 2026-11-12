@@ -61,7 +61,7 @@ BASELINE_GIT_REF = "c55272499a460acdb7bd057ad55d495b65faaefd"
 # both builds can play legal games; four games cannot establish playing strength.
 SELFPLAY_ENABLED = True
 SELFPLAY_REQUIRED = True             # Require the routine smoke check before any runs start.
-CUTECHESS_CLI = "cutechess-cli"
+FASTCHESS_CLI = "fastchess"
 SELFPLAY_GAMES = 4                    # Must be even; colors are swapped in pairs.
 SELFPLAY_TIME_CONTROL = "1+0.1"
 SELFPLAY_HASH_MB = WEISS_DEFAULT["hash_mb"]
@@ -87,6 +87,11 @@ AFFINITY_FIELDS = ["check", "bucket_size", "cap_helpers", "threads", "thread_ind
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def find_fastchess():
+    """Return Fastchess's path if it is available on PATH."""
+    return shutil.which(FASTCHESS_CLI)
 
 
 def experiment_directory(results_root, slug, now=None):
@@ -624,6 +629,10 @@ def record_metadata(output_dir, deadline=None, physical_cpu_ids=None):
                f"physical_core_cpu_map: {physical_cpu_ids or 'not requested'}",
                ("placement: candidate workers use one CPU per physical core; reference source remains unpinned"
                 if physical_cpu_ids else "placement: inherited from shell or scheduler; no per-worker binding requested")]
+    fastchess = find_fastchess() if SELFPLAY_ENABLED else None
+    if fastchess:
+        details.append(f"\n$ {shlex.join([fastchess, '-version'])}\n"
+                       f"{capture([fastchess, '-version'])}")
     for command in ([*shlex.split(CC), "--version"], ["make", "--version"], ["lscpu"],
                     ["numactl", "--show"], ["numactl", "--hardware"]):
         details.append(f"\n$ {shlex.join(command)}\n{capture(command)}")
@@ -731,14 +740,14 @@ def run_affinity_checks(plan, output_dir, binaries, physical_cpu_ids, deadline):
 
 
 def run_selfplay_smoke(output_dir, baseline_binary, candidate_binary, deadline):
-    """Run a small color-swapped UCI smoke match after the search benchmark."""
+    """Run a small color-swapped UCI smoke match with Fastchess."""
     status_path = Path(output_dir) / "selfplay-status.txt"
-    cutechess = shutil.which(CUTECHESS_CLI)
+    fastchess = find_fastchess()
     if not SELFPLAY_ENABLED:
         status_path.write_text("disabled by settings\n", encoding="utf-8")
         return "disabled"
-    if cutechess is None:
-        message = f"skipped: cannot find {CUTECHESS_CLI!r}"
+    if fastchess is None:
+        message = f"skipped: cannot find {FASTCHESS_CLI!r}"
         status_path.write_text(message + "\n", encoding="utf-8")
         if SELFPLAY_REQUIRED:
             raise RuntimeError(message)
@@ -747,13 +756,13 @@ def run_selfplay_smoke(output_dir, baseline_binary, candidate_binary, deadline):
     if SELFPLAY_GAMES < 2 or SELFPLAY_GAMES % 2:
         raise ValueError("SELFPLAY_GAMES must be an even integer of at least 2")
     pgn_path = Path(output_dir) / "selfplay.pgn"
-    command = [cutechess,
+    command = [fastchess,
                "-engine", "name=Weiss candidate", "proto=uci", f"cmd={candidate_binary}",
                "-engine", "name=Weiss baseline", "proto=uci", f"cmd={baseline_binary}",
                "-each", "proto=uci", f"tc={SELFPLAY_TIME_CONTROL}",
                f"option.Threads={SELFPLAY_THREADS}", f"option.Hash={SELFPLAY_HASH_MB}",
-               "-concurrency", "1", "-games", str(SELFPLAY_GAMES), "-repeat",
-               "-pgnout", str(pgn_path)]
+               "-concurrency", "1", "-rounds", str(SELFPLAY_GAMES // 2), "-repeat",
+               "-pgnout", f"file={pgn_path}", "append=false"]
     (Path(output_dir) / "selfplay-command.txt").write_text(
         shlex.join(command) + "\n", encoding="utf-8")
     status_path.write_text("running\n", encoding="utf-8")
@@ -842,6 +851,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
             "Self-play smoke": (f"{SELFPLAY_GAMES} games at {SELFPLAY_TIME_CONTROL}; "
                                 f"Hash {SELFPLAY_HASH_MB} MiB, Threads {SELFPLAY_THREADS}"
                                 if SELFPLAY_ENABLED else "disabled"),
+            "Self-play CLI": find_fastchess() if SELFPLAY_ENABLED else "disabled",
         }
         write_experiment_md(
             output_dir,
@@ -853,7 +863,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                 "Each baseline/candidate pair uses identical depth, threads, TT settings, and the same ordered 50 positions.",
                 "Each pair uses one build from the pinned baseline source and one from the current checkout.",
                 f"Pair order is randomized with seed {ORDER_SEED}; searches run sequentially.",
-                "A short color-swapped self-play smoke check runs after benchmark pairs; Cute Chess CLI is required before the run starts.",
+                "A short color-swapped self-play smoke check runs after benchmark pairs using Fastchess.",
                 "Physical binding pins candidate workers only; the pinned reference source does not contain this feature and remains unpinned.",
                 "CPU IDs come from the process's allowed cpuset and Linux physical-core topology; NUMA placement is otherwise unchanged.",
                 "Affinity verification runs as a separate untimed engine command and checks each worker's actual allowed CPU mask.",
@@ -1038,15 +1048,15 @@ def main():
                   + shlex.join(bench_command(run, binary)))
         if SELFPLAY_ENABLED:
             print(f"after benchmarks: {SELFPLAY_GAMES}-game color-swapped self-play smoke; "
-                  f"Cute Chess CLI is required before a real run starts.")
+                  "fastchess is required before a real run starts.")
         return
     if (type(SELFPLAY_GAMES) is not int or SELFPLAY_GAMES < 2 or SELFPLAY_GAMES % 2
             or type(SELFPLAY_THREADS) is not int or SELFPLAY_THREADS < 1
             or type(SELFPLAY_HASH_MB) is not int or SELFPLAY_HASH_MB < 1
             or not SELFPLAY_TIME_CONTROL.strip()):
         raise ValueError("Invalid self-play smoke settings")
-    if SELFPLAY_ENABLED and SELFPLAY_REQUIRED and shutil.which(CUTECHESS_CLI) is None:
-        raise ValueError(f"Cannot find required self-play dependency {CUTECHESS_CLI!r}")
+    if SELFPLAY_ENABLED and SELFPLAY_REQUIRED and find_fastchess() is None:
+        raise ValueError(f"Cannot find required self-play dependency {FASTCHESS_CLI!r}")
     if hasattr(os, "sched_getaffinity") and max(r["threads"] for r in plan) > len(os.sched_getaffinity(0)):
         raise ValueError("Requested threads exceed this process's allowed CPUs; check your allocation")
     untracked_src = capture(["git", "ls-files", "--others", "--exclude-standard", "--", "src"], required=True)

@@ -385,21 +385,30 @@ if 'rev-parse' in sys.argv: print('fake-commit')
         )
 
         def fake_run(command, log, timeout, env=None):
-            Path(command[command.index("-pgnout") + 1]).write_text(pgn)
-            log.write("fake Cute Chess completed four games\n")
+            pgn_file = command[command.index("-pgnout") + 1].removeprefix("file=")
+            Path(pgn_file).write_text(pgn)
+            log.write("fake Fastchess completed four games\n")
 
-        with patch.object(runner.shutil, "which", return_value="/fake/cutechess-cli"):
+        with patch.object(runner.shutil, "which", return_value="/fake/fastchess"):
             with patch.object(runner, "run_command", side_effect=fake_run):
                 result = runner.run_selfplay_smoke(
                     output, self.root / "baseline", self.root / "candidate", None)
         self.assertEqual(result, "completed 4 games; smoke test only")
+        self.assertTrue((output / "selfplay-command.txt").read_text().startswith("/fake/fastchess "))
+        command = (output / "selfplay-command.txt").read_text()
+        self.assertIn("-rounds 2 -repeat", command)
+        self.assertIn(f"-pgnout file={output / 'selfplay.pgn'} append=false", command)
         with (output / "selfplay-summary.csv").open() as file:
             summary = next(csv.DictReader(file))
         self.assertEqual((summary["candidate_wins"], summary["draws"],
                           summary["candidate_losses"]), ("1", "2", "1"))
         self.assertIn("complete: 4 games", (output / "selfplay-status.txt").read_text())
 
-    def test_required_cutechess_is_checked_before_any_benchmark_starts(self):
+    def test_fastchess_path_is_discovered(self):
+        with patch.object(runner.shutil, "which", return_value="/home/luott/.local/bin/fastchess"):
+            self.assertEqual(runner.find_fastchess(), "/home/luott/.local/bin/fastchess")
+
+    def test_required_fastchess_is_checked_before_any_benchmark_starts(self):
         with patch.object(sys, "argv", ["run_experiments.py"]):
             with patch.multiple(runner, ROOT=self.root, SELFPLAY_ENABLED=True,
                                 SELFPLAY_REQUIRED=True, BASELINE_GIT_REF=None,
@@ -408,7 +417,7 @@ if 'rev-parse' in sys.argv: print('fake-commit')
                 with patch.object(runner, "capture", return_value=""):
                     with patch.object(runner.shutil, "which", return_value=None):
                         with patch.object(runner, "execute") as execute:
-                            with self.assertRaisesRegex(ValueError, "cutechess-cli"):
+                            with self.assertRaisesRegex(ValueError, "fastchess"):
                                 runner.main()
         execute.assert_not_called()
 

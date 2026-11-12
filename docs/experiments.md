@@ -8,10 +8,10 @@ smoke check.
 ## Run it on kiloampere
 
 Build and run from the server checkout, inside the CPU allocation you intend to
-use. The script needs Python 3.10+, Git, Make, a C compiler and Cute Chess CLI for
-the final smoke match. With the default `SELFPLAY_REQUIRED = True`, it checks
-that Cute Chess is on `PATH` before starting any searches. No Python packages are
-needed by the runner.
+use. The script needs Python 3.10+, Git, Make, a C compiler and Fastchess for the
+final smoke match. With `SELFPLAY_REQUIRED = True`, it checks that Fastchess is
+on `PATH` before starting any searches. Fastchess has a Linux ARM64 release
+suitable for kiloampere. No Python packages are needed by the runner.
 
 ```bash
 python3 scripts/run_experiments.py --dry-run
@@ -126,7 +126,7 @@ The runner compares the baseline and current builds using Weiss default UCI
 settings (one thread, Hash 32 MiB) for four
 color-swapped games at `1+0.1`, starting from the normal chess position. It runs
 after all search benchmarks so that it cannot affect their timings. The PGN,
-Cute Chess log, command and game-result CSV are saved with the run.
+Fastchess log, command and game-result CSV are saved with the run.
 
 Four games are only a smoke test for UCI compatibility, legal play and obvious
 crashes. Their score is not an Elo estimate and should not be cited as evidence

@@ -28,8 +28,8 @@ SSH disconnects, optional Linux worker-to-core binding, CPU/NUMA placement,
 output files and measurement rules. Results include per-position runtime,
 chosen move and score, paired run and position summaries, raw logs and
 build/machine metadata. The runner ends with a
-four-game color-swapped self-play smoke check; Cute Chess CLI must be installed
-and available on `PATH` before a run starts.
+four-game color-swapped self-play smoke check; Fastchess must be available on
+`PATH` before a run starts.
 This checks basic UCI/game operation; it is not a playing-strength test.
 Generated run data is ignored by Git; each run's `experiment.md` is kept.
 
