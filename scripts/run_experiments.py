@@ -689,16 +689,18 @@ def pgn_result_headers(path):
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         match = header.fullmatch(line.strip())
         if match:
-            if "Result" in tags:
-                games.append(tags)
-                tags = {}
+            # PGN permits tags after Result (Fastchess writes engine and timing
+            # tags there), so a Result tag does not mean the header block ended.
             tags[match.group(1)] = match.group(2)
-        elif not line.strip() and "Result" in tags:
+        elif not line.strip() and tags:
+            # The blank line after the complete tag block separates headers
+            # from moves. Collect the whole block, regardless of tag order.
             games.append(tags)
             tags = {}
     if tags:
         games.append(tags)
-    return games
+    required = {"White", "Black", "Result"}
+    return [game for game in games if required.issubset(game)]
 
 
 def run_affinity_checks(plan, output_dir, binaries, physical_cpu_ids, deadline):

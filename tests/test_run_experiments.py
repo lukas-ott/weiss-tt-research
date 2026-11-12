@@ -378,10 +378,14 @@ if 'rev-parse' in sys.argv: print('fake-commit')
         output = self.root / "selfplay"
         output.mkdir()
         pgn = (
-            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1-0"]\n\n*\n\n'
-            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1/2-1/2"]\n\n*\n\n'
-            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1/2-1/2"]\n\n*\n\n'
-            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1-0"]\n\n*\n\n'
+            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1-0"]\n'
+            '[EngineWhiteName "Weiss candidate"]\n[EngineBlackName "Weiss baseline"]\n\n*\n\n'
+            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1/2-1/2"]\n'
+            '[EngineWhiteName "Weiss baseline"]\n[EngineBlackName "Weiss candidate"]\n\n*\n\n'
+            '[White "Weiss candidate"]\n[Black "Weiss baseline"]\n[Result "1/2-1/2"]\n'
+            '[EngineWhiteName "Weiss candidate"]\n[EngineBlackName "Weiss baseline"]\n\n*\n\n'
+            '[White "Weiss baseline"]\n[Black "Weiss candidate"]\n[Result "1-0"]\n'
+            '[EngineWhiteName "Weiss baseline"]\n[EngineBlackName "Weiss candidate"]\n\n*\n\n'
         )
 
         def fake_run(command, log, timeout, env=None):
@@ -400,8 +404,11 @@ if 'rev-parse' in sys.argv: print('fake-commit')
         self.assertIn(f"-pgnout file={output / 'selfplay.pgn'} append=false", command)
         with (output / "selfplay-summary.csv").open() as file:
             summary = next(csv.DictReader(file))
+        self.assertEqual((summary["games_in_pgn"], summary["completed_games"]), ("4", "4"))
         self.assertEqual((summary["candidate_wins"], summary["draws"],
                           summary["candidate_losses"]), ("1", "2", "1"))
+        with (output / "selfplay-games.csv").open() as file:
+            self.assertEqual(len(list(csv.DictReader(file))), 4)
         self.assertIn("complete: 4 games", (output / "selfplay-status.txt").read_text())
 
     def test_fastchess_path_is_discovered(self):
