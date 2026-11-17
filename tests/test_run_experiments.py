@@ -29,6 +29,88 @@ def log_text(depth=4, threads=1, memory=4, bucket=2):
     return "\n".join(lines) + "\n"
 
 
+class RoundRobinTests(unittest.TestCase):
+    OPENINGS = [
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -",
+        "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -",
+        "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -",
+    ]
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.book = self.root / "book.epd"
+        self.book.write_text("\n".join(self.OPENINGS) + "\n")
+
+    def pgn(self, first, second, openings, termination="normal"):
+        return "\n".join(
+            f'[White "Weiss-b{white}"]\n[Black "Weiss-b{black}"]\n'
+            f'[Result "{result}"]\n[FEN "{opening} 0 1"]\n'
+            f'[Termination "{termination}"]\n\n{result}\n'
+            for opening in openings
+            for white, black, result in [(first, second, "1-0"), (second, first, "1/2-1/2")]
+        )
+
+    def test_opening_book_skips_duplicates_and_requires_enough_positions(self):
+        self.book.write_text(f'# comment\n{self.OPENINGS[0]}\n'
+                             f'{self.OPENINGS[0]} id "duplicate";\n{self.OPENINGS[1]}\n')
+        with patch.object(runner, "OPENING_PAIRS_PER_MATCHUP", 2):
+            self.assertEqual(runner.round_robin_openings(self.book), self.OPENINGS[:2])
+        with self.assertRaisesRegex(ValueError, "3 distinct"):
+            runner.round_robin_openings(self.book)
+
+    def test_match_validation_requires_swapped_colors_and_completed_games(self):
+        path = self.root / "match.pgn"
+        for content in (self.pgn(1, 2, self.OPENINGS[:2]),
+                        self.pgn(1, 2, self.OPENINGS, "illegal move"),
+                        self.pgn(1, 2, self.OPENINGS).replace('White "Weiss-b2"', 'White "Weiss-b1"')):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                path.write_text(content)
+                runner.round_robin_match_result(path, 1, 2, self.OPENINGS)
+
+    def test_match_uncertainty_resamples_opening_pairs(self):
+        path = self.root / "match.pgn"
+        openings = [f"position-{i} w - -" for i in range(10)]
+        path.write_text(self.pgn(1, 2, openings))
+        report = runner.round_robin_match_result(path, 1, 2, openings)
+        self.assertEqual(report["first_points"], 15)
+        self.assertEqual(report["first_bootstrap_95_low_pct"], 75)
+        self.assertEqual(report["first_bootstrap_95_high_pct"], 75)
+
+    def test_round_robin_saves_one_result_per_matchup_and_ranks_all_layouts(self):
+        def fake_run(command, log, timeout, env=None):
+            if command[0] == "make":
+                Path(next(arg[4:] for arg in command if arg.startswith("EXE="))).touch()
+                return
+            self.assertEqual(command[command.index("-rounds") + 1], "3")
+            self.assertIn("-repeat", command)
+            self.assertIn("restart=on", command)
+            book = Path(command[command.index("-openings") + 1].removeprefix("file="))
+            self.assertEqual(book.read_text().splitlines(), self.OPENINGS)
+            pgn = Path(command[command.index("-pgnout") + 1].removeprefix("file="))
+            first, second = (int(arg.removeprefix("name=Weiss-b")) for arg in command
+                             if arg.startswith("name=Weiss-b"))
+            pgn.write_text(self.pgn(first, second, self.OPENINGS))
+
+        with patch.multiple(runner, ROOT=self.root, run_command=fake_run,
+                            find_fastchess=lambda: "fastchess",
+                            record_metadata=lambda *args, **kwargs: None,
+                            capture=lambda *args, **kwargs: "test"):
+            runner.run_round_robin(self.book, dry_run=False)
+        output, = (self.root / "results" / "experiments").iterdir()
+        with (output / "head-to-head.csv").open() as file:
+            matches = list(csv.DictReader(file))
+        self.assertEqual([(row["first"], row["second"]) for row in matches],
+                         [("1", "2"), ("1", "4"), ("2", "4")])
+        self.assertEqual(sum(int(row["games"]) for row in matches), 18)
+        with (output / "standings.csv").open() as file:
+            standings = list(csv.DictReader(file))
+        self.assertEqual([(row["bucket_size"], row["rank"], float(row["points"])) for row in standings],
+                         [("1", "1", 9), ("2", "2", 6), ("4", "3", 3)])
+        self.assertTrue((output / "status.txt").read_text().startswith("complete "))
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
