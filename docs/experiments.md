@@ -173,3 +173,25 @@ The three search timing fields measure helper launch, elapsed time to the
 main worker's target iteration, and stop to join. Launch is included in
 time to depth. Older runs show blanks for these fields. Matched comparisons
 use completed repetitions available on both sides and report their sample counts.
+
+## TT layout round robin
+
+Use the existing runner with a fixed, diverse opening book in standard chess EPD
+format. Each matchup uses the first `OPENING_PAIRS_PER_MATCHUP` distinct positions
+from that book. The two engines play each position with colors swapped. Edit
+the `ROUND_ROBIN_*` settings at the top of the runner to select the bucket
+sizes, worker count, hash memory and fixed time control.
+
+```bash
+python3 scripts/run_experiments.py --round-robin /path/to/openings.epd --dry-run
+python3 scripts/run_experiments.py --round-robin /path/to/openings.epd
+```
+
+The default of three opening pairs gives six games per matchup and 18 games
+total for three layouts. Use it to check the setup. Increasing to 50 pairs
+gives 300 games. The tournament shares the runner's `TIME_BUDGET_HOURS`
+setting. An interrupted tournament retains the PGNs and completed matchup
+scores. A complete tournament also writes `standings.csv` with shared ranks
+for ties. With at least ten opening pairs, `head-to-head.csv` includes an
+approximate 95% bootstrap interval for each matchup, resampling whole opening
+pairs.

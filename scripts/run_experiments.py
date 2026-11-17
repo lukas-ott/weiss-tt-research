@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Weiss variants and run the existing 50-position benchmark sequentially."""
+"""Run the Weiss benchmark or a timed TT layout round robin."""
 
 import argparse
 import csv
@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +67,14 @@ SELFPLAY_GAMES = 4                    # Must be even; colors are swapped in pair
 SELFPLAY_TIME_CONTROL = "1+0.1"
 SELFPLAY_HASH_MB = WEISS_DEFAULT["hash_mb"]
 SELFPLAY_THREADS = WEISS_DEFAULT["threads"]
+# Separate playing-strength experiment: pass --round-robin and an EPD book.
+ROUND_ROBIN_BUCKET_SIZES = [1, 2, 4]
+OPENING_PAIRS_PER_MATCHUP = 3
+ROUND_ROBIN_THREADS = 1
+ROUND_ROBIN_HASH_MB = 64
+ROUND_ROBIN_TIME_CONTROL = "10+0.1"
+ROUND_ROBIN_SLUG = "tt-layout-round-robin"
+
 # Set cpu_binding="physical" in an EXTRA_RUNS entry to pin candidate workers to
 # one allowed logical CPU per physical core on Linux. Default placement is inherited.
 # ==============================================================================
@@ -624,7 +633,7 @@ def bench_command(run, binary):
     return command
 
 
-def record_metadata(output_dir, deadline=None, physical_cpu_ids=None):
+def record_metadata(output_dir, deadline=None, physical_cpu_ids=None, *, include_fastchess=False):
     commit = capture(["git", "rev-parse", "HEAD"], required=True)
     status = capture(["git", "status", "--short"], required=True)
     patch = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
@@ -643,7 +652,7 @@ def record_metadata(output_dir, deadline=None, physical_cpu_ids=None):
                f"physical_core_cpu_map: {physical_cpu_ids or 'not requested'}",
                ("placement: candidate workers use one CPU per physical core; reference source remains unpinned"
                 if physical_cpu_ids else "placement: inherited from shell or scheduler; no per-worker binding requested")]
-    fastchess = find_fastchess() if SELFPLAY_ENABLED else None
+    fastchess = find_fastchess() if SELFPLAY_ENABLED or include_fastchess else None
     if fastchess:
         details.append(f"\n$ {shlex.join([fastchess, '-version'])}\n"
                        f"{capture([fastchess, '-version'])}")
@@ -1012,14 +1021,180 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
     print(f"Completed {len(plan) // 2} paired comparisons. Results: {output_dir}", flush=True)
 
 
+def round_robin_openings(path):
+    """Choose the first N distinct EPD positions and save those exact inputs."""
+    openings = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split()
+        if (len(fields) < 4 or fields[0].count("/") != 7 or fields[1] not in ("w", "b")
+                or not re.fullmatch(r"-|[KQkq]+", fields[2])
+                or not re.fullmatch(r"-|[a-h][36]", fields[3])):
+            raise ValueError(f"Invalid EPD position in {path}: {line}")
+        position = " ".join(fields[:4])
+        if position not in openings:
+            openings.append(position)
+        if len(openings) == OPENING_PAIRS_PER_MATCHUP:
+            return openings
+    raise ValueError(f"{path} needs at least {OPENING_PAIRS_PER_MATCHUP} distinct positions")
+
+
+def round_robin_match_command(fastchess, first, second, binaries, output, rounds):
+    command = [fastchess]
+    for bucket in (first, second):
+        command.extend(["-engine", f"name=Weiss-b{bucket}", "proto=uci",
+                        f"cmd={binaries[bucket]}", "restart=on"])
+    command.extend(["-each", "proto=uci", f"tc={ROUND_ROBIN_TIME_CONTROL}",
+                    f"option.Threads={ROUND_ROBIN_THREADS}", f"option.Hash={ROUND_ROBIN_HASH_MB}",
+                    "-concurrency", "1", "-rounds", str(rounds), "-repeat",
+                    "-openings", f"file={output / 'openings.epd'}", "format=epd", "order=sequential",
+                    "-pgnout", f"file={output / f'b{first}-vs-b{second}.pgn'}", "append=false",
+                    "-autosaveinterval", "0"])
+    return command
+
+
+def round_robin_match_result(path, first, second, openings):
+    """Validate the two colors for each actual opening in the PGN."""
+    first_name, second_name = f"Weiss-b{first}", f"Weiss-b{second}"
+    scores = {"1-0": 1, "0-1": 0, "1/2-1/2": 0.5}
+    pairs = {opening: {} for opening in openings}
+    start_position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+    for game in pgn_result_headers(path):
+        opening = " ".join(game.get("FEN", start_position).split()[:4])
+        white, black, result = game["White"], game["Black"], game["Result"]
+        if (opening not in pairs or {white, black} != {first_name, second_name}
+                or result not in scores or white in pairs[opening]
+                or game.get("Termination", "").lower() in {"abandoned", "unterminated", "rules infraction", "illegal move"}):
+            raise ValueError(f"Unexpected game in {path}: {white} vs {black}, {result}, {opening}")
+        pairs[opening][white] = scores[result] if white == first_name else 1 - scores[result]
+    if any(len(pair) != 2 for pair in pairs.values()):
+        raise ValueError(f"Missing color-swapped opening games in {path}")
+
+    pair_points = [sum(pair.values()) for pair in pairs.values()]
+    points = sum(pair_points)
+    low, high = "", ""
+    if len(openings) >= 10:
+        # Resample opening pairs as a unit, preserving dependence between colors.
+        rng = random.Random(ORDER_SEED)
+        estimates = sorted(50 * sum(rng.choices(pair_points, k=len(openings))) / len(openings)
+                           for _ in range(4000))
+        low, high = round(estimates[100], 2), round(estimates[3899], 2)
+    game_points = [score for pair in pairs.values() for score in pair.values()]
+    return dict(first=first, second=second, opening_pairs=len(openings), games=len(game_points),
+                first_wins=game_points.count(1), draws=game_points.count(0.5),
+                second_wins=game_points.count(0), first_points=points,
+                second_points=len(game_points) - points,
+                first_score_pct=round(100 * points / len(game_points), 2),
+                first_bootstrap_95_low_pct=low, first_bootstrap_95_high_pct=high)
+
+
+def run_round_robin(opening_path, dry_run):
+    buckets = ROUND_ROBIN_BUCKET_SIZES
+    if (len(buckets) < 2 or len(set(buckets)) != len(buckets)
+            or any(type(bucket) is not int or bucket not in (1, 2, 4, 8) for bucket in buckets)):
+        raise ValueError("ROUND_ROBIN_BUCKET_SIZES must contain at least two distinct supported sizes")
+    if type(OPENING_PAIRS_PER_MATCHUP) is not int or OPENING_PAIRS_PER_MATCHUP < 1:
+        raise ValueError("OPENING_PAIRS_PER_MATCHUP must be a positive integer")
+    if (type(ROUND_ROBIN_THREADS) is not int or not 1 <= ROUND_ROBIN_THREADS <= 2048
+            or type(ROUND_ROBIN_HASH_MB) is not int or ROUND_ROBIN_HASH_MB < 2
+            or not ROUND_ROBIN_TIME_CONTROL.strip()):
+        raise ValueError("Invalid round robin threads, hash, or time control")
+    if hasattr(os, "sched_getaffinity") and ROUND_ROBIN_THREADS > len(os.sched_getaffinity(0)):
+        raise ValueError("Round robin thread count exceeds the number of allowed CPUs")
+    openings = round_robin_openings(opening_path.expanduser())
+    matchups = list(combinations(buckets, 2))
+    print(f"{len(matchups)} matchups, {2 * len(openings)} games each, "
+          f"{2 * len(openings) * len(matchups)} games total")
+    output = (Path("<run-directory>") if dry_run else
+              experiment_directory(ROOT / "results" / "experiments", ROUND_ROBIN_SLUG))
+    binaries = {bucket: output / "bin" / f"weiss-b{bucket}" for bucket in buckets}
+    fastchess = find_fastchess()
+    if dry_run and not fastchess:
+        fastchess = FASTCHESS_CLI
+    if not fastchess:
+        raise ValueError(f"Cannot find required round robin dependency {FASTCHESS_CLI!r}")
+    builds = [build_command(bucket, binary) for bucket, binary in binaries.items()]
+    matches = [round_robin_match_command(fastchess, first, second, binaries, output, len(openings))
+               for first, second in matchups]
+    if dry_run:
+        for command in builds + matches:
+            print(shlex.join(command))
+        return
+
+    deadline = time.monotonic() + TIME_BUDGET_HOURS * 3600
+    (output / "bin").mkdir(parents=True)
+    (output / "openings.epd").write_text("\n".join(openings) + "\n", encoding="utf-8")
+    (output / "build-commands.txt").write_text("\n".join(map(shlex.join, builds)) + "\n")
+    (output / "match-commands.txt").write_text("\n".join(map(shlex.join, matches)) + "\n")
+    status = output / "status.txt"
+    status.write_text("running\n")
+    print(f"Results: {output}", flush=True)
+    try:
+        record_metadata(output, deadline, include_fastchess=True)
+        settings = {"Bucket sizes": buckets, "Threads per engine": ROUND_ROBIN_THREADS,
+                    "Hash MiB": ROUND_ROBIN_HASH_MB, "Time control": ROUND_ROBIN_TIME_CONTROL,
+                    "Opening pairs per matchup": len(openings)}
+        points = dict.fromkeys(buckets, 0.0)
+        for bucket, command in zip(buckets, builds):
+            with (output / f"build-b{bucket}.log").open("w") as log:
+                run_command(command, log, budget_timeout(deadline))
+        with (output / "head-to-head.csv").open("w", newline="") as file:
+            writer = None
+            for (first, second), command in zip(matchups, matches):
+                name = f"b{first}-vs-b{second}"
+                print(f"Playing {name}", flush=True)
+                with (output / f"{name}.log").open("w") as log:
+                    run_command(command, log, budget_timeout(deadline),
+                                env=worker_environment({"cpu_binding": "none"}, []))
+                row = round_robin_match_result(output / f"{name}.pgn", first, second, openings)
+                if writer is None:
+                    writer = csv.DictWriter(file, fieldnames=list(row))
+                    writer.writeheader()
+                writer.writerow(row)
+                file.flush()
+                points[first] += row["first_points"]
+                points[second] += row["second_points"]
+        standings = sorted(points.items(), key=lambda item: (-item[1], item[0]))
+        games = 2 * len(openings) * (len(buckets) - 1)
+        with (output / "standings.csv").open("w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["rank", "bucket_size", "points", "games", "score_pct"])
+            for bucket, score in standings:
+                rank = 1 + sum(other > score for other in points.values())
+                writer.writerow([rank, bucket, score, games, round(100 * score / games, 2)])
+                print(f"{rank}. Bucket {bucket}: {score:g}/{games}", flush=True)
+        write_experiment_md(output, title="TT bucket layout round robin",
+                            question="How do TT bucket layouts score in timed games?",
+                            hypothesis="Layouts may differ in playing strength.", settings=settings,
+                            controls=["Same source, Hash, Threads, time control and opening pairs.",
+                                      "One game at a time, with colors swapped for each opening."],
+                            source_commit=capture(["git", "rev-parse", "HEAD"], required=True),
+                            source_status=capture(["git", "status", "--short"], required=True),
+                            binaries=[(binary.name, hashlib.sha256(binary.read_bytes()).hexdigest())
+                                      for binary in binaries.values()],
+                            status="complete", results="See standings.csv and head-to-head.csv.",
+                            limitations=["Small match scores are tentative. With at least ten opening pairs, "
+                                         "head-to-head includes approximate paired bootstrap intervals."])
+        status.write_text(f"complete {utc_now()}\n")
+    except BaseException as error:
+        status.write_text(f"interrupted or failed {utc_now()}: {type(error).__name__}: {error}\n")
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan only; no files, builds, or benchmarks")
+    parser.add_argument("--round-robin", metavar="OPENINGS.EPD", type=Path,
+                        help="Play a timed TT layout tournament using this EPD opening book")
     args = parser.parse_args()
     if (type(TIME_BUDGET_HOURS) not in (int, float) or not math.isfinite(TIME_BUDGET_HOURS)
             or not 0 < TIME_BUDGET_HOURS <= 24):
         raise ValueError("TIME_BUDGET_HOURS must be positive and at most 24 hours")
+    if args.round_robin is not None:
+        run_round_robin(args.round_robin, args.dry_run)
+        return
     if type(CHECK_THREAD_AFFINITY) is not bool:
         raise ValueError("CHECK_THREAD_AFFINITY must be True or False")
     if (type(AFFINITY_CHECK_TIMEOUT_SECONDS) not in (int, float)
