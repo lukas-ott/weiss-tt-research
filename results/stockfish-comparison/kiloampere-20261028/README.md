@@ -40,23 +40,16 @@ comparison. Before publication, all 40 raw Weiss logs were checked against the C
 records, requested parameters, clock/node totals and ordered FENs. The copied
 binary hash was checked too.
 
-To regenerate, make the original batch available locally and select its folder
-with `EXPERIMENT_DIR` near the top of `scripts/compare_stockfish.py`. Its default is
-`results/experiments/20261028_depth15-thread-scaling-kiloampere`, containing `positions.csv`.
-Install the existing analysis dependency in your environment, then run from the
-repository root:
+To analyze the original batch with the current suite, make its raw folder
+available and run from the repository root:
 
 ```bash
 python -m pip install -r requirements-analysis.txt
-python scripts/compare_stockfish.py
+python scripts/analyze_experiments.py /path/to/original/batch
 ```
 
-The script's marked settings block selects the input, reference, output directory
-and near-best threshold. It runs no chess searches. It rejects duplicate reference
-moves, incomplete suites and inconsistent configurations within a run, checks the
-reference FENs against `src/tests.c`, and keeps configurations/build hashes separate.
-For a new experiment, its position IDs must still refer to this same FEN suite;
-the runner's position CSV itself contains no FEN column.
+The resulting dashboard and tables use the saved Stockfish reference by
+default. The published tables below are the historical analysis outputs.
 
 ## Numeric evaluation differences
 

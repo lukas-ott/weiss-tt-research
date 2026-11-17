@@ -42,4 +42,12 @@ extern atomic_bool SEARCH_STOPPED;
 extern atomic_bool Minimal;
 
 
+typedef struct {
+    uint64_t helperLaunchNS;
+    uint64_t targetReachedNS;
+    uint64_t helperStopToJoinNS;
+} BenchSearchTiming;
+
+extern BenchSearchTiming SearchTiming;
+
 void *SearchPosition(void *pos);

@@ -18,12 +18,15 @@
 
 #pragma once
 
+#include <time.h>
+
 #include "board.h"
 #include "types.h"
 
 
 // Set before benchmark workers start; suppress UCI output inside the timed search.
 extern bool BenchmarkRunning;
+uint64_t BenchClock(clockid_t clock);
 
 void Benchmark(int argc, char **argv);
 int CheckThreadAffinity(int argc, char **argv);

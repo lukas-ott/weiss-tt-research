@@ -74,6 +74,7 @@ POSITION_FIELDS = ["position", "depth", "wall_ns", "cpu_ns", "main_nodes", "node
                    "bestmove", "score_type", "score", "raw_score",
                    "helper_max_started_iteration", "helper_max_completed_iteration",
                    "helper_nodes_beyond_depth"]
+PHASE_TIMING_FIELDS = ["helper_launch_ns", "time_to_depth_ns", "helper_stop_to_join_ns"]
 CONFIG_FIELDS = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
                  "rotate_root_moves", "cpu_binding"]
 RUN_FIELDS = ["run", "comparison_id", "condition", "config_name", "repetition",
@@ -500,10 +501,10 @@ def parse_result(path, expected, physical_cpu_ids=None):
             headers.append(next(csv.reader([line]))[1:])
         elif line.startswith("BENCH_POSITION,"):
             values = next(csv.reader([line]))[1:]
-            if len(values) != len(POSITION_FIELDS):
+            if not headers or len(values) != len(headers[-1]):
                 raise ValueError(f"Malformed position row in {path}")
-            row = dict(zip(POSITION_FIELDS, values))
-            for field in POSITION_FIELDS:
+            row = dict(zip(headers[-1], values))
+            for field in row:
                 if field not in ("bestmove", "score_type"):
                     row[field] = int(row[field])
             positions.append(row)
@@ -511,7 +512,9 @@ def parse_result(path, expected, physical_cpu_ids=None):
             totals.append(dict(re.findall(r"(\w+)=(\d+)", line)))
         elif match := OVERALL.fullmatch(line):
             overall.append(tuple(map(int, match.groups())))
-    if len(configs) != 1 or headers != [POSITION_FIELDS] or len(totals) != 1 or len(overall) != 1:
+    timed_fields = POSITION_FIELDS + PHASE_TIMING_FIELDS
+    if (len(configs) != 1 or headers not in ([POSITION_FIELDS], [timed_fields])
+            or len(totals) != 1 or len(overall) != 1):
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
     string_fields = {"cpu_binding", "cpu_list"}
     config = {key: (value if key in string_fields else int(value))
@@ -566,6 +569,17 @@ def parse_result(path, expected, physical_cpu_ids=None):
     elapsed_ms, nodes, nps = overall[0]
     if nodes != summary["nodes"] or elapsed_ms != max(1, summary["wall_ns"] // 1_000_000):
         raise ValueError(f"OVERALL does not match position rows in {path}")
+    if headers == [timed_fields]:
+        for row in positions:
+            launch = row["helper_launch_ns"]
+            to_depth = row["time_to_depth_ns"]
+            stop_to_join = row["helper_stop_to_join_ns"]
+            if (not 0 <= launch <= to_depth <= row["wall_ns"] or to_depth == 0
+                    or not 0 <= stop_to_join <= row["wall_ns"] - to_depth
+                    or (expected["threads"] == 1 and (launch or stop_to_join))):
+                raise ValueError(f"Invalid phase timing for position {row['position']} in {path}")
+        summary.update({field: sum(row[field] for row in positions)
+                        for field in PHASE_TIMING_FIELDS})
     summary.update(
         helper_nodes_beyond_depth=sum(row["helper_nodes_beyond_depth"] for row in positions),
         helper_max_started_iteration=max(row["helper_max_started_iteration"] for row in positions),
@@ -928,13 +942,15 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
         summary_fields = ["wall_ns", "cpu_ns", "main_nodes", "nodes", "elapsed_ms", "nps",
                           "entry_bytes", "bucket_bytes", "buckets", "process_wall_ns",
                           "helper_nodes_beyond_depth", "helper_max_started_iteration",
-                          "helper_max_completed_iteration", "applied_cpu_binding", "cpu_list"]
+                          "helper_max_completed_iteration", "applied_cpu_binding", "cpu_list",
+                          *PHASE_TIMING_FIELDS]
         with (output_dir / "runs.csv").open("w", newline="") as run_file, (
                 output_dir / "positions.csv").open("w", newline="") as position_file:
             runs = csv.DictWriter(run_file, fieldnames=RUN_FIELDS + ["started_utc", "finished_utc"]
                                   + summary_fields + PROVENANCE_FIELDS + ["command"])
             # Completed depth equals requested depth after validation; store it once.
             position_fields = RUN_FIELDS + [name for name in POSITION_FIELDS if name not in RUN_FIELDS]
+            position_fields += PHASE_TIMING_FIELDS
             positions = csv.DictWriter(position_file, fieldnames=position_fields + PROVENANCE_FIELDS)
             runs.writeheader()
             positions.writeheader()

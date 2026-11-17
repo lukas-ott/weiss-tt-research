@@ -31,6 +31,7 @@
 #include "search.h"
 #include "syzygy.h"
 #include "time.h"
+#include "tests.h"
 #include "threads.h"
 #include "transposition.h"
 #include "uci.h"
@@ -40,6 +41,7 @@ SearchLimits Limits = { .multiPV = 1 };
 atomic_bool ABORT_SIGNAL;
 atomic_bool SEARCH_STOPPED = true;
 atomic_bool Minimal = false;
+BenchSearchTiming SearchTiming;
 
 static int Reductions[2][32][32];
 
@@ -744,6 +746,9 @@ static void *IterativeDeepening(void *voidThread) {
         // Only the main thread concerns itself with the rest
         if (!mainThread) continue;
 
+        if (BenchmarkRunning && thread->completedDepth == Limits.depth)
+            SearchTiming.targetReachedNS = BenchClock(CLOCK_MONOTONIC);
+
         // Print search info
         if (!Minimal)
             PrintThinking(thread, -INFINITE, INFINITE);
@@ -783,7 +788,10 @@ static void *IterativeDeepening(void *voidThread) {
 // Root of search
 void *SearchPosition(void *pos) {
 
+    uint64_t launchStart = 0;
     SEARCH_STOPPED = false;
+    if (BenchmarkRunning)
+        SearchTiming = (BenchSearchTiming){0};
 
     InitTimeManagement();
     TTNewSearch();
@@ -796,7 +804,11 @@ void *SearchPosition(void *pos) {
     if (ProbeNoob(pos)) goto conclusion;
 
     // Start helper threads and begin searching
+    if (BenchmarkRunning && Threads->count > 1)
+        launchStart = BenchClock(CLOCK_MONOTONIC);
     StartHelpers(IterativeDeepening);
+    if (launchStart)
+        SearchTiming.helperLaunchNS = BenchClock(CLOCK_MONOTONIC) - launchStart;
     IterativeDeepening(&Threads[0]);
 
 conclusion:
@@ -805,8 +817,13 @@ conclusion:
     if (Limits.infinite) Wait(&ABORT_SIGNAL);
 
     // Signal helper threads to stop and wait for them to finish
+    uint64_t stopStart = 0;
+    if (BenchmarkRunning && launchStart)
+        stopStart = BenchClock(CLOCK_MONOTONIC);
     ABORT_SIGNAL = true;
     WaitForHelpers();
+    if (stopStart)
+        SearchTiming.helperStopToJoinNS = BenchClock(CLOCK_MONOTONIC) - stopStart;
 
     // Print the best move found
     PrintBestMove(Threads->rootMoves[0].move);

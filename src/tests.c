@@ -119,7 +119,7 @@ static int BenchArgument(const char *text, const char *name, int minimum, int ma
     return (int)value;
 }
 
-static uint64_t BenchClock(clockid_t clock) {
+uint64_t BenchClock(clockid_t clock) {
     struct timespec timestamp;
     if (clock_gettime(clock, &timestamp) != 0) {
         perror("benchmark clock_gettime");
@@ -169,7 +169,7 @@ void Benchmark(int argc, char **argv) {
     }
     putchar('\n');
 
-    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth");
+    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth,helper_launch_ns,time_to_depth_ns,helper_stop_to_join_ns");
     for (int i = 0; i < FENCount; ++i) {
         printf("[# %2d] %s\n", i + 1, BenchmarkFENs[i]);
         fflush(stdout);
@@ -209,6 +209,8 @@ void Benchmark(int argc, char **argv) {
         totalWallNS += r->wallNS;
         totalCpuNS += r->cpuNS;
         totalNodes += r->nodes;
+        uint64_t timeToDepthNS = SearchTiming.targetReachedNS >= wallStart
+                               ? SearchTiming.targetReachedNS - wallStart : 0;
         ClearTT();
 
         // Emit each completed position immediately, outside the timed interval.
@@ -216,10 +218,12 @@ void Benchmark(int argc, char **argv) {
         int distance = (MATE - abs(r->score) + 1) / 2;
         int score = mate ? (r->score > 0 ? distance : -distance) : r->score;
         printf("BENCH_POSITION,%d,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
-               ",%" PRIu64 ",%s,%s,%d,%d,%d,%d,%" PRIu64 "\n",
+               ",%" PRIu64 ",%s,%s,%d,%d,%d,%d,%" PRIu64
+               ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
                i + 1, r->depth, r->wallNS, r->cpuNS, r->mainNodes, r->nodes,
                MoveToStr(r->best), mate ? "mate" : "cp", score, r->score,
-               helperStarted, helperCompleted, helperBeyondNodes);
+               helperStarted, helperCompleted, helperBeyondNodes,
+               SearchTiming.helperLaunchNS, timeToDepthNS, SearchTiming.helperStopToJoinNS);
         fflush(stdout);
     }
     printf("BENCH_TOTAL wall_ns=%" PRIu64 " cpu_ns=%" PRIu64 "\n", totalWallNS, totalCpuNS);

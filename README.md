@@ -46,7 +46,7 @@ See the [kiloampere comparison](results/stockfish-comparison/kiloampere-20261028
 for the eight thread configurations, score differences, move agreement, coverage
 and runtime. Derived summaries are tracked; raw server inputs remain local.
 To reproduce the analysis, point the marked settings block at your original Weiss
-experiment folder and run `python scripts/compare_stockfish.py` after installing
+experiment folder and run `python scripts/analyze_experiments.py` after installing
 `requirements-analysis.txt`. No chess searches are launched.
 
 ## Research context

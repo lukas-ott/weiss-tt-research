@@ -156,15 +156,20 @@ rest of the generated data; each concise `experiment.md` is retained in Git.
 
 ## Analysis
 
-For quick pandas summaries, point `EXPERIMENT_DIR` near the top of
-`scripts/analyze_runs.py` or `scripts/analyze_positions.py` at the generated
-folder. Both summaries keep baseline and candidate separate. The paired runtime
-ratios are already in `comparisons.csv`. For HTML charts, configure
-`EXPERIMENT_DIRS` in `scripts/visualize_experiments.py` and run:
+Use the single analysis entry point from the repository root:
 
 ```bash
-python3 scripts/visualize_experiments.py
+python -m pip install -r requirements-analysis.txt
+python scripts/analyze_experiments.py /path/to/experiment
 ```
 
-The analysis scripts use pandas; the visualizer also uses Matplotlib. Install
-those in the local analysis environment using `requirements-analysis.txt`.
+For repeated use, edit `EXPERIMENT_DIRS`, `FILTERS`, `CHART_GROUPS` and
+`COMPARISON_REFERENCES` at the top of the script. You can pass multiple
+folders. The report keeps experiments and builds separate and writes
+`analysis/index.html` with charts and links to the CSV tables. Specify
+`--output` to write elsewhere or `--no-reference` to skip Stockfish.
+
+The three search timing fields measure helper launch, elapsed time to the
+main worker's target iteration, and stop to join. Launch is included in
+time to depth. Older runs show blanks for these fields. Matched comparisons
+use completed repetitions available on both sides and report their sample counts.

@@ -10,7 +10,7 @@ except ModuleNotFoundError:
     raise unittest.SkipTest("Stockfish comparison tests need the optional pandas dependency")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from compare_stockfish import CONFIG, compare, summarize
+from analyze_experiments import CONFIG, compare, summarize
 
 
 class StockfishComparisonTests(unittest.TestCase):
