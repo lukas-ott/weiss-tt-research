@@ -86,11 +86,8 @@ dkms.conf
 *.tmp
 *.log
 
-# Generated experiment data stays local; keep only the short experiment record in Git.
-/results/experiments/*
-!/results/experiments/*/
-/results/experiments/*/**
-!/results/experiments/*/experiment.md
+# Generated experiment results and notes stay local.
+/results/experiments/
 
 # Python bytecode
 __pycache__/

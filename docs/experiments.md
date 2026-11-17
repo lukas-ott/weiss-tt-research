@@ -152,7 +152,7 @@ Each run is saved to `results/experiments/YYYYMMDD_<slug>/`:
 
 `wall_ns` is not whole-runner wall time. `process_wall_ns` separately includes
 benchmark-process overhead. Keep the full output directory outside Git with the
-rest of the generated data; each concise `experiment.md` is retained in Git.
+rest of the generated data, including the generated `experiment.md`.
 
 ## Analysis
 
