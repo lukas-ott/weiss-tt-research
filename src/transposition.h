@@ -128,8 +128,17 @@ INLINE void TTNewSearch() {
     TT.dirty = true;
 }
 
-TTEntry* ProbeTT(Key key, bool *ttHit);
-void StoreTTEntry(TTEntry *tte, Key key, Move move, int score, int eval, Depth depth, int bound);
+#ifdef TT_DIAGNOSTICS
+// Lives in the probing call frame, including across recursive searches at the same ply.
+typedef struct {
+    bool sampled, empty;
+    int32_t signature;
+} TTSlotSample;
+#endif
+
+TTEntry* ProbeTT(Key key, bool *ttHit TT_DIAG(, Thread *thread));
+void StoreTTEntry(TTEntry *tte, Key key, Move move, int score, int eval, Depth depth, int bound
+                  TT_DIAG(, Thread *thread, TTSlotSample sample));
 int HashFull();
 void ClearTT();
 void InitTT();

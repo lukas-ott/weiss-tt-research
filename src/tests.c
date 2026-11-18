@@ -128,6 +128,60 @@ uint64_t BenchClock(clockid_t clock) {
     return (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + timestamp.tv_nsec;
 }
 
+#ifdef TT_DIAGNOSTICS
+static const char *const metricNames[TT_METRIC_COUNT] = {
+    [TT_HIT] = "hit",
+    [TT_EMPTY_MISS] = "empty_miss",
+    [TT_FULL_MISS] = "full_miss",
+    [TT_AB_PROBES] = "ab_probes",
+    [TT_QS_PROBES] = "qs_probes",
+    [TT_AB_CUTOFFS] = "ab_cutoffs",
+    [TT_QS_CUTOFFS] = "qs_cutoffs",
+    [TT_FIRST_TT_MOVE] = "first_tt_move",
+    [TT_FIRST_TT_MOVE_CUTOFF] = "first_tt_move_cutoff",
+    [TT_STORE_EMPTY] = "store_empty",
+    [TT_STORE_SAME] = "store_same",
+    [TT_STORE_REPLACE] = "store_replace",
+    [TT_STORE_SKIP] = "store_skip",
+    [TT_REPLACED_DEPTH_SUM] = "replaced_depth_sum",
+    [TT_REPLACED_DEPTH_0] = "replaced_depth_0",
+    [TT_REPLACED_DEPTH_1_7] = "replaced_depth_1_7",
+    [TT_REPLACED_DEPTH_8_15] = "replaced_depth_8_15",
+    [TT_REPLACED_DEPTH_16_PLUS] = "replaced_depth_16_plus",
+    [TT_CHANGED_DEEPER_REPLACEMENTS] = "changed_deeper_replacements",
+    [TT_SAMPLED_STORES] = "sampled_stores",
+    [TT_CHANGED_SLOTS] = "changed_slots",
+};
+
+static void PrintTTDiagnostics(int workers, bool header) {
+    uint64_t histogram[BUCKET_SIZE + 1] = {0};
+    if (!header) {
+        for (uint64_t b = 0; b < TT.count; ++b) {
+            int occupied = 0;
+            for (int i = 0; i < BUCKET_SIZE; ++i)
+                occupied += !EntryEmpty(&TT.table[b].entries[i]);
+            histogram[occupied]++;
+        }
+    }
+    for (int i = 0; i <= BUCKET_SIZE; ++i) {
+        if (header) printf(",tt_buckets_%d", i);
+        else printf(",%" PRIu64, histogram[i]);
+    }
+    for (int helpers = 0; helpers <= 1; ++helpers) {
+        for (int m = 0; m < TT_METRIC_COUNT; ++m) {
+            if (header) {
+                printf(",tt_%s_%s", helpers ? "helpers" : "main", metricNames[m]);
+            } else {
+                uint64_t sum = 0;
+                for (int t = helpers; t < (helpers ? workers : 1); ++t)
+                    sum += Threads[t].ttCounters[m];
+                printf(",%" PRIu64, sum);
+            }
+        }
+    }
+}
+#endif
+
 void Benchmark(int argc, char **argv) {
 
     if (argc > 6) {
@@ -169,7 +223,9 @@ void Benchmark(int argc, char **argv) {
     }
     putchar('\n');
 
-    puts("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth,helper_launch_ns,time_to_depth_ns,helper_stop_to_join_ns");
+    fputs("BENCH_POSITION_HEADER,position,depth,wall_ns,cpu_ns,main_nodes,nodes,bestmove,score_type,score,raw_score,helper_max_started_iteration,helper_max_completed_iteration,helper_nodes_beyond_depth,helper_launch_ns,time_to_depth_ns,helper_stop_to_join_ns", stdout);
+    TT_DIAG(PrintTTDiagnostics(threadCount, true);)
+    putchar('\n');
     for (int i = 0; i < FENCount; ++i) {
         printf("[# %2d] %s\n", i + 1, BenchmarkFENs[i]);
         fflush(stdout);
@@ -211,7 +267,6 @@ void Benchmark(int argc, char **argv) {
         totalNodes += r->nodes;
         uint64_t timeToDepthNS = SearchTiming.targetReachedNS >= wallStart
                                ? SearchTiming.targetReachedNS - wallStart : 0;
-        ClearTT();
 
         // Emit each completed position immediately, outside the timed interval.
         bool mate = isMate(r->score);
@@ -219,11 +274,14 @@ void Benchmark(int argc, char **argv) {
         int score = mate ? (r->score > 0 ? distance : -distance) : r->score;
         printf("BENCH_POSITION,%d,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64
                ",%" PRIu64 ",%s,%s,%d,%d,%d,%d,%" PRIu64
-               ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
+               ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
                i + 1, r->depth, r->wallNS, r->cpuNS, r->mainNodes, r->nodes,
                MoveToStr(r->best), mate ? "mate" : "cp", score, r->score,
                helperStarted, helperCompleted, helperBeyondNodes,
                SearchTiming.helperLaunchNS, timeToDepthNS, SearchTiming.helperStopToJoinNS);
+        TT_DIAG(PrintTTDiagnostics(threadCount, false);)
+        putchar('\n');
+        ClearTT();
         fflush(stdout);
     }
     printf("BENCH_TOTAL wall_ns=%" PRIu64 " cpu_ns=%" PRIu64 "\n", totalWallNS, totalCpuNS);

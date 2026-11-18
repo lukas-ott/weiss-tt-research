@@ -75,6 +75,20 @@ ROUND_ROBIN_HASH_MB = 64
 ROUND_ROBIN_TIME_CONTROL = "10+0.1"
 ROUND_ROBIN_SLUG = "tt-layout-round-robin"
 
+# Enable with WEISS_TT_DIAGNOSTICS=1. Both builds use this checkout.
+TT_DIAGNOSTICS = os.environ.get("WEISS_TT_DIAGNOSTICS", "0") == "1"
+if TT_DIAGNOSTICS:
+    WEISS_DEFAULT.update(depth=23, threads=1, hash_mb=64)
+    EXTRA_RUNS = [{"name": f"b{bucket}-t{threads}", "bucket_size": bucket, "threads": threads}
+                  for bucket in (1, 2, 4) for threads in (1, 128)
+                  if (bucket, threads) != (2, 1)]
+    REPETITIONS = 10
+    TIME_BUDGET_HOURS = 8
+    TIMEOUT_SECONDS = 600
+    EXPERIMENT_SLUG = "tt-replacement-diagnostics-depth23"
+    BASELINE_GIT_REF = None
+    SELFPLAY_ENABLED = False
+
 # Set cpu_binding="physical" in an EXTRA_RUNS entry to pin candidate workers to
 # one allowed logical CPU per physical core on Linux. Default placement is inherited.
 # ==============================================================================
@@ -500,6 +514,36 @@ def validate_paired_plan(plan):
     return groups
 
 
+TT_COUNTERS = ("hit empty_miss full_miss ab_probes qs_probes ab_cutoffs qs_cutoffs "
+               "first_tt_move first_tt_move_cutoff store_empty store_same store_replace store_skip "
+               "replaced_depth_sum replaced_depth_0 replaced_depth_1_7 replaced_depth_8_15 "
+               "replaced_depth_16_plus sampled_stores changed_slots changed_deeper_replacements").split()
+
+
+def tt_fields(bucket_size):
+    return ([f"tt_buckets_{n}" for n in range(bucket_size + 1)]
+            + [f"tt_{role}_{metric}" for role in ("main", "helpers") for metric in TT_COUNTERS])
+
+
+def validate_tt_counts(row, config):
+    width = config["bucket_size"]
+    if any(row[field] < 0 for field in tt_fields(width)):
+        raise ValueError("Negative TT counter")
+    if sum(row[f"tt_buckets_{n}"] for n in range(width + 1)) != config["buckets"]:
+        raise ValueError("TT occupancy histogram does not cover every bucket")
+    depth_bins = ("replaced_depth_0", "replaced_depth_1_7", "replaced_depth_8_15", "replaced_depth_16_plus")
+    for role in ("main", "helpers"):
+        c = {m: row[f"tt_{role}_{m}"] for m in TT_COUNTERS}
+        if (c["hit"] + c["empty_miss"] + c["full_miss"] != c["ab_probes"] + c["qs_probes"]
+                or c["ab_cutoffs"] > c["ab_probes"] or c["qs_cutoffs"] > c["qs_probes"]
+                or c["ab_cutoffs"] + c["qs_cutoffs"] > c["hit"]
+                or c["first_tt_move_cutoff"] > c["first_tt_move"]
+                or sum(c[m] for m in depth_bins) != c["store_replace"]
+                or not c["changed_deeper_replacements"] <= c["changed_slots"] <= c["sampled_stores"]
+                or (role == "helpers" and config["threads"] == 1 and any(c.values()))):
+            raise ValueError(f"Inconsistent TT diagnostics at position {row['position']} ({role})")
+
+
 def parse_result(path, expected, physical_cpu_ids=None):
     """Accept only a complete, internally consistent log for the requested run."""
     configs, headers, positions, totals, overall = [], [], [], [], []
@@ -522,7 +566,11 @@ def parse_result(path, expected, physical_cpu_ids=None):
         elif match := OVERALL.fullmatch(line):
             overall.append(tuple(map(int, match.groups())))
     timed_fields = POSITION_FIELDS + PHASE_TIMING_FIELDS
-    if (len(configs) != 1 or headers not in ([POSITION_FIELDS], [timed_fields])
+    detailed_fields = timed_fields + tt_fields(expected["bucket_size"])
+    detailed = headers == [detailed_fields]
+    if TT_DIAGNOSTICS and detailed != (expected.get("condition") == "candidate"):
+        raise ValueError(f"TT diagnostics do not match requested build in {path}")
+    if (len(configs) != 1 or headers not in ([POSITION_FIELDS], [timed_fields], [detailed_fields])
             or len(totals) != 1 or len(overall) != 1):
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
     string_fields = {"cpu_binding", "cpu_list"}
@@ -578,7 +626,10 @@ def parse_result(path, expected, physical_cpu_ids=None):
     elapsed_ms, nodes, nps = overall[0]
     if nodes != summary["nodes"] or elapsed_ms != max(1, summary["wall_ns"] // 1_000_000):
         raise ValueError(f"OVERALL does not match position rows in {path}")
-    if headers == [timed_fields]:
+    if detailed:
+        for row in positions:
+            validate_tt_counts(row, config)
+    if detailed or headers == [timed_fields]:
         for row in positions:
             launch = row["helper_launch_ns"]
             to_depth = row["time_to_depth_ns"]
@@ -599,9 +650,12 @@ def parse_result(path, expected, physical_cpu_ids=None):
     return summary, positions
 
 
-def build_command(bucket, binary, cap_helpers=0, source_root=ROOT):
+def build_command(bucket, binary, cap_helpers=0, source_root=ROOT, diagnostics=False):
+    flags = f"-DBENCH_CAP_HELPERS={cap_helpers}"
+    if diagnostics:
+        flags += " -DTT_DIAGNOSTICS"
     return ["make", "-C", str(Path(source_root) / "src"), "basic", f"BUCKET_SIZE={bucket}",
-            f"CPPFLAGS=-DBENCH_CAP_HELPERS={cap_helpers}", f"CC={CC}", f"EXE={binary}"]
+            f"CPPFLAGS={flags}", f"CC={CC}", f"EXE={binary}"]
 
 
 def prepare_baseline_source(output_dir):
@@ -644,7 +698,8 @@ def record_metadata(output_dir, deadline=None, physical_cpu_ids=None, *, include
                f"python: {sys.version}", f"source_commit: {commit}",
                f"source_status_before_run:\n{status or '(clean)'}",
                f"runner_command: {shlex.join(sys.argv)}", f"order_seed: {ORDER_SEED}",
-               f"baseline_git_ref: {BASELINE_GIT_REF or '(disabled; same source for test fixture)'}",
+               f"baseline_git_ref: {BASELINE_GIT_REF or '(current checkout)'}",
+               f"tt_diagnostics_candidate: {TT_DIAGNOSTICS}",
                f"check_thread_affinity: {CHECK_THREAD_AFFINITY}",
                f"timeout_seconds: {TIMEOUT_SECONDS}",
                f"total_budget_seconds_at_metadata: {None if deadline is None else max(0, deadline - time.monotonic())}",
@@ -872,7 +927,8 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
             "Repetitions": sorted({run["repetition"] for run in plan}),
             "Timeout": TIMEOUT_SECONDS,
             "Time budget (hours)": TIME_BUDGET_HOURS,
-            "Pinned baseline source": BASELINE_GIT_REF or "same source (test mode)",
+            "Baseline source": BASELINE_GIT_REF or "current checkout",
+            "TT diagnostics": "candidate only" if TT_DIAGNOSTICS else "disabled",
             "Self-play smoke": (f"{SELFPLAY_GAMES} games at {SELFPLAY_TIME_CONTROL}; "
                                 f"Hash {SELFPLAY_HASH_MB} MiB, Threads {SELFPLAY_THREADS}"
                                 if SELFPLAY_ENABLED else "disabled"),
@@ -881,14 +937,16 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
         write_experiment_md(
             output_dir,
             title="Weiss paired benchmark experiment",
-            question="How do changes in the current Weiss checkout affect time to depth, search work, moves and scores against the pinned source baseline?",
-            hypothesis="The candidate may change runtime and search results; the direction and size of the effect are measured with matched baseline/candidate runs.",
+            question=("How does bucket width affect TT replacements and useful hits as worker count increases?"
+                      if TT_DIAGNOSTICS else "How do changes in the current Weiss checkout affect time to depth, search work, moves and scores against the pinned source baseline?"),
+            hypothesis=("Direct-mapped buckets may lose more reusable entries under parallel search."
+                        if TT_DIAGNOSTICS else "The candidate may change runtime and search results; the direction and size of the effect are measured with matched baseline/candidate runs."),
             settings=settings,
             controls=[
                 "Each baseline/candidate pair uses identical depth, threads, TT settings, and the same ordered 50 positions.",
-                "Each pair uses one build from the pinned baseline source and one from the current checkout.",
+                "Each pair uses the baseline source specified above and the current checkout.",
                 f"Pair order is randomized with seed {ORDER_SEED}; searches run sequentially.",
-                "A short color-swapped self-play smoke check runs after benchmark pairs using Fastchess.",
+                *(["A short color-swapped self-play smoke check follows the benchmark."] if SELFPLAY_ENABLED else []),
                 "Physical binding pins candidate workers only; the pinned reference source does not contain this feature and remains unpinned.",
                 "CPU IDs come from the process's allowed cpuset and Linux physical-core topology; NUMA placement is otherwise unchanged.",
                 "Affinity verification runs as a separate untimed engine command and checks each worker's actual allowed CPU mask.",
@@ -926,7 +984,8 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                 for condition, bucket, cap in sorted(build_specs):
                     binary = output_dir / "bin" / condition / f"weiss-b{bucket}-cap{cap}"
                     binary.parent.mkdir(parents=True, exist_ok=True)
-                    command = build_command(bucket, binary, cap, source_roots[condition])
+                    command = build_command(bucket, binary, cap, source_roots[condition],
+                                            diagnostics=TT_DIAGNOSTICS and condition == "candidate")
                     commands.write(shlex.join(command) + "\n")
                     commands.flush()
                     print(f"Building {condition}: bucket size {bucket}, cap_helpers={cap}", flush=True)
@@ -960,11 +1019,14 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
             # Completed depth equals requested depth after validation; store it once.
             position_fields = RUN_FIELDS + [name for name in POSITION_FIELDS if name not in RUN_FIELDS]
             position_fields += PHASE_TIMING_FIELDS
+            if TT_DIAGNOSTICS:
+                position_fields += tt_fields(max(run["bucket_size"] for run in plan))
             positions = csv.DictWriter(position_file, fieldnames=position_fields + PROVENANCE_FIELDS)
             runs.writeheader()
             positions.writeheader()
             run_file.flush()
             position_file.flush()
+            single_worker_results = {}
             for run in plan:
                 binary, digest = binaries[run["condition"], run["bucket_size"], run["cap_helpers"]]
                 command = bench_command(run, binary)
@@ -982,6 +1044,16 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                 finished = utc_now()
                 process_wall_ns = time.monotonic_ns() - process_start
                 summary, rows = parse_result(raw, run, physical_cpu_ids)
+                if TT_DIAGNOSTICS and run["threads"] == 1:
+                    key = run["comparison_id"]
+                    outcomes = [(r["bestmove"], r["raw_score"], r["nodes"]) for r in rows]
+                    if key in single_worker_results:
+                        previous = single_worker_results.pop(key)
+                        for position, (before, after) in enumerate(zip(previous, outcomes), 1):
+                            if before != after:
+                                raise ValueError(f"Single-worker results changed in {key}, position {position}: {before} vs {after}")
+                    else:
+                        single_worker_results[key] = outcomes
                 summary["process_wall_ns"] = process_wall_ns
                 provenance = dict(binary_sha256=digest, raw_log=str(raw.relative_to(output_dir)))
                 positions.writerows({**run, **row, **provenance} for row in rows)
@@ -1225,7 +1297,8 @@ def main():
             binary = Path('<run-directory>') / 'bin' / condition / f'weiss-b{bucket}-cap{cap}'
             source_root = (f"<baseline-worktree:{BASELINE_GIT_REF}>"
                            if condition == "baseline" and BASELINE_GIT_REF else ROOT)
-            print(shlex.join(build_command(bucket, binary, cap, source_root)))
+            print(shlex.join(build_command(bucket, binary, cap, source_root,
+                                           diagnostics=TT_DIAGNOSTICS and condition == "candidate")))
         if CHECK_THREAD_AFFINITY:
             for bucket, cap, threads in affinity_check_specs(plan):
                 binary = Path('<run-directory>') / 'bin' / 'candidate' / f'weiss-b{bucket}-cap{cap}'

@@ -53,7 +53,7 @@ FILTERS = {
 
 CHART_GROUPS = {
     "scaling": True, "across": True, "work": True, "phases": True,
-    "comparisons": True, "stability": True, "stockfish": True,
+    "tt": True, "comparisons": True, "stability": True, "stockfish": True,
 }
 SHOW_ERROR_BARS = True            # ±1 sample standard deviation
 FIGURE_DPI = 125
@@ -492,7 +492,44 @@ def matched_comparisons(runs, positions):
             pd.concat(details, ignore_index=True))
 
 
+def tt_diagnostics(positions, groups):
+    """Pool counters before dividing. Empty denominators stay unmeasured."""
+    if "tt_main_hit" not in positions:
+        return pd.DataFrame()
+    rows = positions.dropna(subset=["tt_main_hit"])
+    if rows.empty:
+        return pd.DataFrame()
+    fields = [name for name in rows if name.startswith("tt_")]
+    counts = rows.groupby(groups, dropna=False)[fields].sum(min_count=1).reset_index()
+    bins = [name for name in fields if name.startswith("tt_buckets_")]
+    bucket_count = counts[bins].sum(axis=1)
+    occupied = sum(int(name.rsplit("_", 1)[1]) * counts[name].fillna(0) for name in bins)
+    occupancy_pct = 100 * occupied / (counts["bucket_size"] * bucket_count)
+    frames = []
+    for role in ("main", "helpers"):
+        prefix = f"tt_{role}_"
+        raw = counts.filter(like=prefix).rename(columns=lambda name: name[len(prefix):])
+        data = counts[groups + bins].copy()
+        data["workers"] = role
+        data["occupied_entries_pct"] = occupancy_pct
+        probes = raw["ab_probes"] + raw["qs_probes"]
+        for metric in ("hit", "empty_miss", "full_miss", "store_replace"):
+            data[metric + "_per_1000_probes"] = 1000 * raw[metric] / probes.where(probes > 0)
+        for numerator, denominator, label in [
+                ("ab_cutoffs", "ab_probes", "ab_cutoff_pct"),
+                ("qs_cutoffs", "qs_probes", "qs_cutoff_pct"),
+                ("first_tt_move_cutoff", "first_tt_move", "first_tt_move_cutoff_pct"),
+                ("changed_slots", "sampled_stores", "changed_slot_pct")]:
+            data[label] = 100 * raw[numerator] / raw[denominator].where(raw[denominator] > 0)
+        data["mean_replaced_depth"] = raw["replaced_depth_sum"] / raw["store_replace"].where(raw["store_replace"] > 0)
+        frames.append(pd.concat([data, raw], axis=1))
+    return pd.concat(frames, ignore_index=True)
+
+
 QUESTIONS = {
+    "tt": ("What happens to entries during search?",
+           "Compare full-bucket misses, usable bounds and sampled slot changes by bucket width. "
+           "Main and helper measurements are reported separately."),
     "scaling": ("Where does scaling flatten?",
                 "Compare wall time and aggregate throughput at fixed depth and TT settings. "
                 "Speedup uses each batch’s own matching one-worker run."),
@@ -565,7 +602,7 @@ def line_panel(ax, metrics, show_legend=True):
                 ha="center", color="#697784")
 
 
-def build_views(summary, positions, quality, comparisons, output_dir):
+def build_views(summary, positions, quality, comparisons, output_dir, tt_runs=None):
     """One selectable chart per question and set of held conditions."""
     views = {question: [] for question in QUESTIONS}
     output_dir.joinpath("charts").mkdir(exist_ok=True)
@@ -760,6 +797,25 @@ def build_views(summary, positions, quality, comparisons, output_dir):
                         "depth": "Depth"}.get(setting, setting)
                 save("comparisons", f"{name} · {describe_settings(dict(zip(fixed, keys)))}", fig,
                      f"Matched repeats per point: {rows['pairs'].min()}–{rows['pairs'].max()}.")
+    if enabled("tt") and tt_runs is not None and not tt_runs.empty:
+        fixed = [f for f in CONFIG if f not in ("bucket_size", "threads", "binary_sha256")]
+        for keys, sample in tt_runs.groupby(fixed + ["workers"], dropna=False):
+            fig, axes = plt.subplots(2, 2, figsize=(10.6, 6.8), layout="constrained")
+            threads = sorted(sample["threads"].unique())
+            for ax, (metric, title, unit) in zip(axes.flat, [
+                    ("full_miss_per_1000_probes", "Full bucket on miss", "Per 1,000 probes"),
+                    ("ab_cutoff_pct", "Alpha-beta score cutoffs", "% of alpha-beta probes"),
+                    ("mean_replaced_depth", "Depth of displaced entries", "Plies"),
+                    ("changed_slot_pct", "Slot changed before store", "% of sampled stores")]):
+                polish_axis(ax, title, unit, threads)
+                lines = []
+                for (width, digest), group in sample.groupby(["bucket_size", "binary_sha256"]):
+                    points = group.groupby("threads")[metric].agg(["mean", "std"]).reset_index()
+                    lines.append((f"{width} entries · {digest[:8]}", points, "mean", "std"))
+                line_panel(ax, lines)
+            label = describe_settings(dict(zip(fixed, keys))) + " · " + keys[-1]
+            save("tt", label, fig, "Each point averages whole-suite rates across repetitions. "
+                 "A slot change can also arise through same-worker recursion.")
     return views
 
 
@@ -768,7 +824,7 @@ def write_index(output_dir, inputs, views, tables, run_summary):
     sections = []
     navigation = []
     nav_labels = {
-        "scaling": "Scaling", "across": "Across batches", "work": "Search work",
+        "scaling": "Scaling", "across": "Across batches", "work": "Search work", "tt": "TT diagnostics",
         "phases": "Phase timings", "comparisons": "Design changes",
         "stability": "Position stability", "stockfish": "Stockfish",
     }
@@ -874,6 +930,11 @@ def main():
         "position_summary": (position_summary, "Per-position time, nodes, scores and moves"),
         "stability_summary": (stability, "Move and score stability by configuration"),
     }
+    tt_runs = tt_diagnostics(positions, CONFIG + ["run", "repetition"])
+    if not tt_runs.empty:
+        tables["tt_by_run"] = (tt_runs, "TT counts, occupancy and rates per repetition and worker role")
+        tables["tt_by_position"] = (tt_diagnostics(positions, CONFIG + ["position"]),
+                                    "TT counts and rates for each position pooled across repetitions")
     if not pairs.empty:
         tables["matched_runs"] = (pairs, "Matched repetitions and their measured differences")
         tables["matched_summary"] = (pair_summary, "Matched effects by configuration")
@@ -908,7 +969,7 @@ def main():
 
     for name, (table, _) in tables.items():
         save_csv(table, output_dir / f"{name}.csv")
-    views = build_views(run_summary, position_summary, stockfish_summary, pair_summary, output_dir)
+    views = build_views(run_summary, position_summary, stockfish_summary, pair_summary, output_dir, tt_runs)
     write_index(output_dir, inputs, views, tables, run_summary)
     print(f"Analysed {runs['run_key'].nunique()} completed benchmark repetitions across "
           f"{len(run_summary)} configurations.")

@@ -59,7 +59,40 @@ typedef struct RootMove {
     PV pv;
 } RootMove;
 
+// Only diagnostic builds carry worker-local counters. PrepareSearch clears them per position.
+#ifdef TT_DIAGNOSTICS
+#define TT_DIAG(...) __VA_ARGS__
+enum TTMetric {
+    TT_HIT,
+    TT_EMPTY_MISS,
+    TT_FULL_MISS,
+    TT_AB_PROBES,
+    TT_QS_PROBES,
+    TT_AB_CUTOFFS,
+    TT_QS_CUTOFFS,
+    TT_FIRST_TT_MOVE,
+    TT_FIRST_TT_MOVE_CUTOFF,
+    TT_STORE_EMPTY,
+    TT_STORE_SAME,
+    TT_STORE_REPLACE,
+    TT_STORE_SKIP,
+    TT_REPLACED_DEPTH_SUM,
+    TT_REPLACED_DEPTH_0,
+    TT_REPLACED_DEPTH_1_7,
+    TT_REPLACED_DEPTH_8_15,
+    TT_REPLACED_DEPTH_16_PLUS,
+    TT_SAMPLED_STORES,
+    TT_CHANGED_SLOTS,
+    TT_CHANGED_DEEPER_REPLACEMENTS,
+    TT_METRIC_COUNT
+};
+#else
+#define TT_DIAG(...)
+#endif
+
 typedef struct Thread {
+    TT_DIAG(uint64_t ttCounters[TT_METRIC_COUNT];)
+
 
     Stack ss[128];
     jmp_buf jumpBuffer;

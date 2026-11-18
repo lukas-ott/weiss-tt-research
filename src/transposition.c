@@ -30,14 +30,18 @@ TranspositionTable TT = { .requestedMB = HASH_DEFAULT };
 
 
 // Probe the transposition table
-TTEntry* ProbeTT(const Key key, bool *ttHit) {
+TTEntry* ProbeTT(const Key key, bool *ttHit TT_DIAG(, Thread *thread)) {
 
     TTEntry* first = GetTTBucket(key)->entries;
 
     for (TTEntry *entry = first; entry < first + BUCKET_SIZE; ++entry)
-        if (entry->key == (int32_t)key || EntryEmpty(entry))
-            return *ttHit = !EntryEmpty(entry), entry;
+        if (entry->key == (int32_t)key || EntryEmpty(entry)) {
+            *ttHit = !EntryEmpty(entry);
+            TT_DIAG(thread->ttCounters[*ttHit ? TT_HIT : TT_EMPTY_MISS]++;)
+            return entry;
+        }
 
+    TT_DIAG(thread->ttCounters[TT_FULL_MISS]++;)
     TTEntry *replace = first;
     for (TTEntry *entry = first + 1; entry < first + BUCKET_SIZE; ++entry)
         if (EntryValue(replace) > EntryValue(entry))
@@ -47,22 +51,54 @@ TTEntry* ProbeTT(const Key key, bool *ttHit) {
 }
 
 // Store an entry in the transposition table
-void StoreTTEntry(TTEntry *tte, Key key, Move move, int score, int eval, Depth depth, int bound) {
+void StoreTTEntry(TTEntry *tte, Key key, Move move, int score, int eval, Depth depth, int bound
+                  TT_DIAG(, Thread *thread, TTSlotSample sample)) {
 
     assert(ValidBound(bound));
     assert(ValidScore(score));
 
+#ifdef TT_DIAGNOSTICS
+    // Observations of the existing unsynchronized slot, not a coherent snapshot.
+    bool wasEmpty = EntryEmpty(tte);
+    int32_t observedKey = tte->key;
+    int observedDepth = tte->depth;
+    bool changed = sample.sampled && (sample.empty != wasEmpty || (!wasEmpty && sample.signature != observedKey));
+    if (sample.sampled) {
+        thread->ttCounters[TT_SAMPLED_STORES]++;
+        if (changed)
+            thread->ttCounters[TT_CHANGED_SLOTS]++;
+    }
+#endif
     if (move || (int32_t)key != tte->key)
         tte->move = move;
 
     // Store new data unless it would overwrite data about the same
     // position searched to a higher depth.
-    if ((int32_t)key != tte->key || depth + 4 >= tte->depth || bound == BOUND_EXACT || Age(tte))
-        tte->key   = key,
-        tte->score = score,
-        tte->eval  = eval,
-        tte->depth = depth,
+    if ((int32_t)key != tte->key || depth + 4 >= tte->depth || bound == BOUND_EXACT || Age(tte)) {
+#ifdef TT_DIAGNOSTICS
+        if (wasEmpty)
+            thread->ttCounters[TT_STORE_EMPTY]++;
+        else if (observedKey == (int32_t)key)
+            thread->ttCounters[TT_STORE_SAME]++;
+        else {
+            thread->ttCounters[TT_STORE_REPLACE]++;
+            thread->ttCounters[TT_REPLACED_DEPTH_SUM] += observedDepth;
+            enum TTMetric bin = observedDepth == 0 ? TT_REPLACED_DEPTH_0
+                              : observedDepth < 8  ? TT_REPLACED_DEPTH_1_7
+                              : observedDepth < 16 ? TT_REPLACED_DEPTH_8_15 : TT_REPLACED_DEPTH_16_PLUS;
+            thread->ttCounters[bin]++;
+            if (changed && observedDepth > depth)
+                thread->ttCounters[TT_CHANGED_DEEPER_REPLACEMENTS]++;
+        }
+#endif
+        tte->key   = key;
+        tte->score = score;
+        tte->eval  = eval;
+        tte->depth = depth;
         tte->genBound = TT.generation | bound;
+    } else {
+        TT_DIAG(thread->ttCounters[TT_STORE_SKIP]++;)
+    }
 }
 
 // Estimates the load factor of the transposition table (1 = 0.1%)

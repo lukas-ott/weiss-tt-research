@@ -29,6 +29,31 @@ def log_text(depth=4, threads=1, memory=4, bucket=2):
     return "\n".join(lines) + "\n"
 
 
+class TTDiagnosticsTests(unittest.TestCase):
+    def test_histogram_probe_partition_and_single_worker(self):
+        config = {"bucket_size": 2, "threads": 1, "buckets": 20}
+        row = dict.fromkeys(runner.tt_fields(2), 0)
+        row.update(position=1, tt_buckets_0=17, tt_buckets_1=2, tt_buckets_2=1,
+                   tt_main_hit=4, tt_main_full_miss=2, tt_main_ab_probes=6)
+        runner.validate_tt_counts(row, config)
+        for change in ({"tt_buckets_1": 4}, {"tt_main_qs_probes": 1},
+                       {"tt_helpers_store_empty": 1}, {"tt_main_changed_slots": 1},
+                       {"tt_main_store_replace": 1}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                runner.validate_tt_counts({**row, **change}, config)
+
+    def test_preset_uses_same_source_for_every_instrumentation_pair(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), "--dry-run"],
+                                env={**os.environ, "WEISS_TT_DIAGNOSTICS": "1"},
+                                capture_output=True, text=True, check=True)
+        self.assertIn("60 paired comparisons (120 benchmark runs)", result.stdout)
+        self.assertNotIn("baseline-worktree", result.stdout)
+        builds = [line for line in result.stdout.splitlines() if line.startswith("make ")]
+        self.assertEqual(len(builds), 6)
+        for line in builds:
+            self.assertEqual("-DTT_DIAGNOSTICS" in line, "/candidate/" in line)
+
+
 class RoundRobinTests(unittest.TestCase):
     OPENINGS = [
         "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -",

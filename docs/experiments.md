@@ -195,3 +195,43 @@ scores. A complete tournament also writes `standings.csv` with shared ranks
 for ties. With at least ten opening pairs, `head-to-head.csv` includes an
 approximate 95% bootstrap interval for each matchup, resampling whole opening
 pairs.
+
+## TT replacement diagnostics
+
+On kiloampere, preview and launch the paired experiment with the existing runner.
+
+```bash
+WEISS_TT_DIAGNOSTICS=1 python3 scripts/run_experiments.py --dry-run
+WEISS_TT_DIAGNOSTICS=1 nohup python3 -u scripts/run_experiments.py > tt-diagnostics.out 2>&1 < /dev/null &
+```
+
+The settings block selects depth 23, 64 MiB, bucket widths 1/2/4, 1/128 workers
+and ten repetitions. Both binaries use the current source and compiler flags.
+Only the candidate defines `TT_DIAGNOSTICS`. Use the baseline for uninstrumented
+time to depth and compare the pair to estimate instrumentation overhead. The
+runner checks matching single-worker moves, raw scores and nodes. The preset
+uses an eight-hour budget and skips self-play.
+
+In `positions.csv`, `tt_main_*` describes worker zero and `tt_helpers_*` sums
+worker-private counters after join. Hits, empty misses and full-bucket misses
+partition all probes. Alpha-beta and quiescence count direct TT score returns
+separately. First-move cutoffs count the TT move when it was the first move
+actually searched in the ordinary move loop. Store outcomes describe entry
+payload writes. A skipped payload may still update the move. Replacement
+depths are grouped as 0, 1–7, 8–15 and 16+ plies. Every 1024th probe per worker
+and search type saves the observed occupancy and 32-bit signature. Sampled
+stores count only those probes reaching a store. The changed-slot rate uses
+sampled stores as its denominator. A changed deeper replacement also requires
+an observed replacement whose old depth exceeds the incoming depth.
+
+The table scan runs once per position after search and outside both clocks,
+before clearing. `tt_buckets_N` counts buckets containing exactly N occupied
+slots. Occupancy measures the final state. Full misses and cutoffs measure
+activity throughout search. Parallel reads of the original shared entry
+fields are unsynchronized. These counters describe observed signatures and
+cannot establish false-key hits, torn reads or cross-worker duplication.
+
+Run `scripts/analyze_experiments.py` on the result directory. The TT diagnostics
+section plots run means. The linked CSVs give the raw counts and denominators
+per run and per position. Occupancy is shared by both worker roles. A blank
+rate means its denominator was zero.

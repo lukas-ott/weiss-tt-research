@@ -46,6 +46,24 @@ BenchSearchTiming SearchTiming;
 static int Reductions[2][32][32];
 
 
+#ifdef TT_DIAGNOSTICS
+static TTSlotSample SampleTTSlot(Thread *thread, enum TTMetric probeType, TTEntry *tte) {
+    // Systematic sample within this worker and search type. A probe may never store.
+    TTSlotSample sample = { .sampled = (++thread->ttCounters[probeType] % 1024 == 0) };
+    if (sample.sampled) {
+        sample.empty = EntryEmpty(tte);
+        sample.signature = tte->key;
+    }
+    return sample;
+}
+
+static void RecordFirstMove(Thread *thread, Move *firstSearched, Move move, Move ttMove) {
+    if (*firstSearched) return;
+    *firstSearched = move;
+    if (move == ttMove) thread->ttCounters[TT_FIRST_TT_MOVE]++;
+}
+#endif
+
 // Initializes the late move reduction array
 CONSTR(1) InitReductions() {
     for (int depth = 1; depth < 32; ++depth)
@@ -128,7 +146,11 @@ static int Quiescence(Thread *thread, Stack *ss, int alpha, int beta) {
 
     // Probe transposition table
     bool ttHit;
-    TTEntry *tte = ProbeTT(pos->key, &ttHit);
+    TTEntry *tte = ProbeTT(pos->key, &ttHit TT_DIAG(, thread));
+#ifdef TT_DIAGNOSTICS
+    TTSlotSample sample = SampleTTSlot(thread, TT_QS_PROBES, tte);
+    Move firstSearched = NOMOVE;
+#endif
 
     Move ttMove = ttHit ? tte->move : NOMOVE;
     int ttScore = ttHit ? ScoreFromTT(tte->score, ss->ply) : NOSCORE;
@@ -140,8 +162,10 @@ static int Quiescence(Thread *thread, Stack *ss, int alpha, int beta) {
         ttHit = false, ttMove = NOMOVE, ttScore = NOSCORE, ttEval = NOSCORE;
 
     // Trust TT if not a pvnode
-    if (!pvNode && ttHit && TTScoreIsMoreInformative(ttBound, ttScore, beta))
+    if (!pvNode && ttHit && TTScoreIsMoreInformative(ttBound, ttScore, beta)) {
+        TT_DIAG(thread->ttCounters[TT_QS_CUTOFFS]++;)
         return ttScore;
+    }
 
     if (inCheck) goto moveloop;
 
@@ -200,6 +224,7 @@ moveloop:
         }
 
 search:
+        TT_DIAG(RecordFirstMove(thread, &firstSearched, move, ttMove);)
         ss->move = move;
         ss->continuation = &thread->continuation[inCheck][moveIsCapture(move)][piece(move)][toSq(move)];
         ss->contCorr = &thread->contCorrHistory[piece(move)][toSq(move)];
@@ -222,8 +247,11 @@ search:
                     UpdatePv(ss, move);
 
                 // If score beats beta we have a cutoff
-                if (score >= beta)
+                if (score >= beta) {
+                    TT_DIAG(if (firstSearched == move && move == ttMove)
+                                thread->ttCounters[TT_FIRST_TT_MOVE_CUTOFF]++;)
                     break;
+                }
             }
         }
     }
@@ -233,7 +261,7 @@ search:
         return matedIn(ss->ply);
 
     StoreTTEntry(tte, pos->key, bestMove, ScoreToTT(bestScore, ss->ply), unadjustedEval, 0,
-                 bestScore >= beta ? BOUND_LOWER : BOUND_UPPER);
+                 bestScore >= beta ? BOUND_LOWER : BOUND_UPPER TT_DIAG(, thread, sample));
 
     return bestScore;
 }
@@ -289,7 +317,11 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
 
     // Probe transposition table
     bool ttHit;
-    TTEntry *tte = ProbeTT(pos->key, &ttHit);
+    TTEntry *tte = ProbeTT(pos->key, &ttHit TT_DIAG(, thread));
+#ifdef TT_DIAGNOSTICS
+    TTSlotSample sample = SampleTTSlot(thread, TT_AB_PROBES, tte);
+    Move firstSearched = NOMOVE;
+#endif
 
     Move ttMove = ttHit ? tte->move : NOMOVE;
     int ttScore = ttHit ? ScoreFromTT(tte->score, ss->ply) : NOSCORE;
@@ -303,6 +335,7 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
     // Trust TT if not a pvnode and the entry depth is sufficiently high
     if (!pvNode && ttHit && ttDepth >= depth && TTScoreIsMoreInformative(ttBound, ttScore, beta)) {
 
+        TT_DIAG(thread->ttCounters[TT_AB_CUTOFFS]++;)
         // Give a history bonus to quiet tt moves that causes a cutoff
         if (ttScore >= beta && moveIsQuiet(ttMove)) {
             QuietHistoryUpdate(ttMove, Bonus(depth));
@@ -323,7 +356,7 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
 
         // Draw scores are exact, while wins are lower bounds and losses upper bounds (mate scores are better/worse)
         if (bound == BOUND_EXACT || (bound == BOUND_LOWER ? tbScore >= beta : tbScore <= alpha)) {
-            StoreTTEntry(tte, pos->key, NOMOVE, ScoreToTT(tbScore, ss->ply), NOSCORE, MAX_PLY, bound);
+            StoreTTEntry(tte, pos->key, NOMOVE, ScoreToTT(tbScore, ss->ply), NOSCORE, MAX_PLY, bound TT_DIAG(, thread, sample));
             return tbScore;
         }
 
@@ -520,7 +553,7 @@ move_loop:
             extension = MAX(extension, 1);
 
 skip_extensions:
-
+        TT_DIAG(RecordFirstMove(thread, &firstSearched, move, ttMove);)
         MakeMove(pos, move);
 
         ss->move = move;
@@ -613,6 +646,8 @@ skip_extensions:
 
                 // If score beats beta we have a cutoff
                 if (score >= beta) {
+                    TT_DIAG(if (firstSearched == move && move == ttMove)
+                                thread->ttCounters[TT_FIRST_TT_MOVE_CUTOFF]++;)
                     UpdateHistory(thread, ss, bestMove, depth, quiets, quietCount, noisys, noisyCount);
                     break;
                 }
@@ -640,7 +675,7 @@ skip_extensions:
         StoreTTEntry(tte, pos->key, bestMove, ScoreToTT(bestScore, ss->ply), unadjustedEval, depth,
                        bestScore >= beta  ? BOUND_LOWER
                      : pvNode && bestMove ? BOUND_EXACT
-                                          : BOUND_UPPER);
+                                          : BOUND_UPPER TT_DIAG(, thread, sample));
 
     // Update correction history
     if (   !inCheck
