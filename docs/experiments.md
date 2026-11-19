@@ -235,3 +235,33 @@ Run `scripts/analyze_experiments.py` on the result directory. The TT diagnostics
 section plots run means. The linked CSVs give the raw counts and denominators
 per run and per position. Occupancy is shared by both worker roles. A blank
 rate means its denominator was zero.
+
+## Two-entry victim-policy experiment
+
+Both engines use this checkout. The baseline chooses a victim by depth and age.
+On a full-bucket miss the candidate chooses one of the two slots using the
+incoming position key. Signature matches, empty slots and the store rules use
+the original code. The benchmark identifies the policy in its raw log and the
+runner checks that identity before saving runs.csv and positions.csv.
+
+From the server checkout, run the two batches in sequence:
+
+```bash
+unset WEISS_TT_DIAGNOSTICS
+WEISS_TT_VICTIM_TEST=timing python3 scripts/run_experiments.py --dry-run
+nohup sh -c 'WEISS_TT_VICTIM_TEST=timing python3 -u scripts/run_experiments.py && WEISS_TT_VICTIM_TEST=diagnostics python3 -u scripts/run_experiments.py' > tt-victim.out 2>&1 < /dev/null &
+```
+
+Each batch uses 10 paired repetitions at depth 23, 64 MiB and 1/128 workers
+(40 suites per batch). Each has its own time budget. Use the timing batch for
+elapsed time and the diagnostic batch for cutoff rates and depth ≥8 evictions per
+1,000 probes. The two policies can change the search even at one worker. For
+that worker count the same policy should reproduce its results across batches.
+
+For a separate capacity test, change `VICTIM_HASH_MIB = [64]` near the top of
+the runner to e.g. `[32, 64, 128]`. Compare capacities within one policy at the
+same worker count. The analysis suite exports `tt_capacity.csv`, which gives
+each position equal weight after averaging repeats. Its 50% and 95% thresholds
+describe the distribution. A larger table earns its memory if it improves the
+outcome of interest, such as ordinary-build time to depth. Use full-bucket
+misses, deep evictions and usable cutoffs to interpret the time change.

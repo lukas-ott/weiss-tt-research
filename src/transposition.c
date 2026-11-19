@@ -42,10 +42,16 @@ TTEntry* ProbeTT(const Key key, bool *ttHit TT_DIAG(, Thread *thread)) {
         }
 
     TT_DIAG(thread->ttCounters[TT_FULL_MISS]++;)
+#ifdef TT_DEPTH_BLIND
+    // A full two-slot bucket: pick a slot from the incoming Zobrist key.
+    // At the tested power-of-two capacities the bucket index uses the upper bits.
+    TTEntry *replace = first + ((key ^ (key >> 32)) & 1);
+#else
     TTEntry *replace = first;
     for (TTEntry *entry = first + 1; entry < first + BUCKET_SIZE; ++entry)
         if (EntryValue(replace) > EntryValue(entry))
             replace = entry;
+#endif
 
     return *ttHit = false, replace;
 }

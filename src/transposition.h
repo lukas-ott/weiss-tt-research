@@ -36,6 +36,15 @@
 #error "BUCKET_SIZE must be 1, 2, 4, or 8"
 #endif
 
+#ifdef TT_DEPTH_BLIND
+#if BUCKET_SIZE != 2
+#error "The depth-blind victim experiment requires two entries per bucket"
+#endif
+#define TT_VICTIM_POLICY "depth-blind"
+#else
+#define TT_VICTIM_POLICY "depth-age"
+#endif
+
 #define ValidBound(bound) (bound >= BOUND_UPPER && bound <= BOUND_EXACT)
 #define ValidScore(score) (score >= -MATE && score <= MATE)
 

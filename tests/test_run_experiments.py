@@ -53,6 +53,31 @@ class TTDiagnosticsTests(unittest.TestCase):
         for line in builds:
             self.assertEqual("-DTT_DIAGNOSTICS" in line, "/candidate/" in line)
 
+    def test_victim_presets_keep_both_policy_builds_on_the_same_footing(self):
+        for mode in ("timing", "diagnostics"):
+            with self.subTest(mode=mode):
+                env = {**os.environ, "WEISS_TT_VICTIM_TEST": mode, "WEISS_TT_DIAGNOSTICS": "0"}
+                result = subprocess.run([sys.executable, str(SCRIPT), "--dry-run"], env=env,
+                                        capture_output=True, text=True, check=True)
+                self.assertIn("20 paired comparisons (40 benchmark runs)", result.stdout)
+                self.assertNotIn("baseline-worktree", result.stdout)
+                builds = [line for line in result.stdout.splitlines() if line.startswith("make ")]
+                self.assertEqual(len(builds), 2)
+                for line in builds:
+                    self.assertIn("BUCKET_SIZE=2", line)
+                    self.assertEqual("-DTT_DIAGNOSTICS" in line, mode == "diagnostics")
+                    self.assertEqual("-DTT_DEPTH_BLIND" in line, "/candidate/" in line)
+
+    def test_wrong_victim_binary_is_rejected(self):
+        expected = dict(bucket_size=2, depth=4, threads=1, hash_mb=4, cap_helpers=0,
+                        condition="candidate")
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, "VICTIM_TEST", "timing"):
+            log = Path(directory, "bench.log")
+            for label in ["", " victim_policy=depth-age"]:
+                log.write_text(log_text().replace(" cap_helpers", label + " cap_helpers"))
+                with self.assertRaisesRegex(ValueError, "Expected engine victim policy"):
+                    runner.parse_result(log, expected)
+
 
 class RoundRobinTests(unittest.TestCase):
     OPENINGS = [

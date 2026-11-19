@@ -75,19 +75,36 @@ ROUND_ROBIN_HASH_MB = 64
 ROUND_ROBIN_TIME_CONTROL = "10+0.1"
 ROUND_ROBIN_SLUG = "tt-layout-round-robin"
 
-# Enable with WEISS_TT_DIAGNOSTICS=1. Both builds use this checkout.
+# Full-bucket victim comparison. Choose timing or diagnostics with WEISS_TT_VICTIM_TEST.
+# Keep 64 MiB for the policy study. Add sizes here for a separate capacity sweep.
+VICTIM_HASH_MIB = [64]
+VICTIM_TEST = os.environ.get("WEISS_TT_VICTIM_TEST", "")
 TT_DIAGNOSTICS = os.environ.get("WEISS_TT_DIAGNOSTICS", "0") == "1"
-if TT_DIAGNOSTICS:
-    WEISS_DEFAULT.update(depth=23, threads=1, hash_mb=64)
-    EXTRA_RUNS = [{"name": f"b{bucket}-t{threads}", "bucket_size": bucket, "threads": threads}
-                  for bucket in (1, 2, 4) for threads in (1, 128)
-                  if (bucket, threads) != (2, 1)]
+if VICTIM_TEST and VICTIM_TEST not in ("timing", "diagnostics"):
+    raise ValueError("WEISS_TT_VICTIM_TEST must be timing or diagnostics")
+if VICTIM_TEST == "timing" and TT_DIAGNOSTICS:
+    raise ValueError("Unset WEISS_TT_DIAGNOSTICS for the uninstrumented victim timing test")
+if VICTIM_TEST or TT_DIAGNOSTICS:
+    WEISS_DEFAULT.update(bucket_size=2, depth=23, threads=1, hash_mb=64)
     REPETITIONS = 10
     TIME_BUDGET_HOURS = 8
     TIMEOUT_SECONDS = 600
-    EXPERIMENT_SLUG = "tt-replacement-diagnostics-depth23"
     BASELINE_GIT_REF = None
     SELFPLAY_ENABLED = False
+    if VICTIM_TEST:
+        if not VICTIM_HASH_MIB:
+            raise ValueError("VICTIM_HASH_MIB needs at least one TT size")
+        TT_DIAGNOSTICS = VICTIM_TEST == "diagnostics"
+        WEISS_DEFAULT.update(hash_mb=VICTIM_HASH_MIB[0], cap_helpers=0, rotate_root_moves=0, cpu_binding="none")
+        EXTRA_RUNS = [{"name": f"hash-{size}-t{threads}", "hash_mb": size, "threads": threads}
+                      for size in VICTIM_HASH_MIB for threads in (1, 128)
+                      if (size, threads) != (VICTIM_HASH_MIB[0], 1)]
+        EXPERIMENT_SLUG = f"tt-victim-policy-{VICTIM_TEST}-depth23"
+    else:
+        EXTRA_RUNS = [{"name": f"b{bucket}-t{threads}", "bucket_size": bucket, "threads": threads}
+                      for bucket in (1, 2, 4) for threads in (1, 128)
+                      if (bucket, threads) != (2, 1)]
+        EXPERIMENT_SLUG = "tt-replacement-diagnostics-depth23"
 
 # Set cpu_binding="physical" in an EXTRA_RUNS entry to pin candidate workers to
 # one allowed logical CPU per physical core on Linux. Default placement is inherited.
@@ -102,7 +119,7 @@ CONFIG_FIELDS = ["bucket_size", "depth", "threads", "hash_mb", "cap_helpers",
                  "rotate_root_moves", "cpu_binding"]
 RUN_FIELDS = ["run", "comparison_id", "condition", "config_name", "repetition",
               *CONFIG_FIELDS, "phase"]
-PROVENANCE_FIELDS = ["binary_sha256", "raw_log"]
+PROVENANCE_FIELDS = ["binary_sha256", "raw_log"] + (["victim_policy"] if VICTIM_TEST else [])
 OVERALL = re.compile(r"^OVERALL:\s+(\d+)\s+ms\s+(\d+)\s+nodes\s+(\d+)\s+nps\s*$")
 AFFINITY_FIELDS = ["check", "bucket_size", "cap_helpers", "threads", "thread_index",
                    "expected_cpu", "running_cpu", "allowed_cpu_count", "allowed_cpus",
@@ -544,6 +561,14 @@ def validate_tt_counts(row, config):
             raise ValueError(f"Inconsistent TT diagnostics at position {row['position']} ({role})")
 
 
+def victim_policy(condition):
+    return "depth-blind" if VICTIM_TEST and condition == "candidate" else "depth-age"
+
+
+def use_tt_counters(condition):
+    return TT_DIAGNOSTICS and (bool(VICTIM_TEST) or condition == "candidate")
+
+
 def parse_result(path, expected, physical_cpu_ids=None):
     """Accept only a complete, internally consistent log for the requested run."""
     configs, headers, positions, totals, overall = [], [], [], [], []
@@ -568,14 +593,18 @@ def parse_result(path, expected, physical_cpu_ids=None):
     timed_fields = POSITION_FIELDS + PHASE_TIMING_FIELDS
     detailed_fields = timed_fields + tt_fields(expected["bucket_size"])
     detailed = headers == [detailed_fields]
-    if TT_DIAGNOSTICS and detailed != (expected.get("condition") == "candidate"):
+    if (VICTIM_TEST or TT_DIAGNOSTICS) and detailed != use_tt_counters(expected.get("condition")):
         raise ValueError(f"TT diagnostics do not match requested build in {path}")
     if (len(configs) != 1 or headers not in ([POSITION_FIELDS], [timed_fields], [detailed_fields])
             or len(totals) != 1 or len(overall) != 1):
         raise ValueError(f"Missing or duplicate benchmark records in {path}")
-    string_fields = {"cpu_binding", "cpu_list"}
+    string_fields = {"cpu_binding", "cpu_list", "victim_policy"}
     config = {key: (value if key in string_fields else int(value))
               for key, value in configs[0].items()}
+    if VICTIM_TEST:
+        policy = victim_policy(expected["condition"])
+        if config.get("victim_policy") != policy:
+            raise ValueError(f"Expected engine victim policy {policy} in {path}")
     config.setdefault("rotate_root_moves", 0)  # Older benchmark logs used the unrotated order.
     config.setdefault("cpu_binding", "none")
     config.setdefault("cpu_list", "none")
@@ -650,9 +679,11 @@ def parse_result(path, expected, physical_cpu_ids=None):
     return summary, positions
 
 
-def build_command(bucket, binary, cap_helpers=0, source_root=ROOT, diagnostics=False):
+def build_command(bucket, binary, cap_helpers=0, source_root=ROOT, condition=None):
     flags = f"-DBENCH_CAP_HELPERS={cap_helpers}"
-    if diagnostics:
+    if victim_policy(condition) == "depth-blind":
+        flags += " -DTT_DEPTH_BLIND"
+    if condition and use_tt_counters(condition):
         flags += " -DTT_DIAGNOSTICS"
     return ["make", "-C", str(Path(source_root) / "src"), "basic", f"BUCKET_SIZE={bucket}",
             f"CPPFLAGS={flags}", f"CC={CC}", f"EXE={binary}"]
@@ -699,6 +730,8 @@ def record_metadata(output_dir, deadline=None, physical_cpu_ids=None, *, include
                f"source_status_before_run:\n{status or '(clean)'}",
                f"runner_command: {shlex.join(sys.argv)}", f"order_seed: {ORDER_SEED}",
                f"baseline_git_ref: {BASELINE_GIT_REF or '(current checkout)'}",
+               f"victim_test: {VICTIM_TEST or 'disabled'}",
+               f"tt_diagnostics_baseline: {use_tt_counters('baseline')}",
                f"tt_diagnostics_candidate: {TT_DIAGNOSTICS}",
                f"check_thread_affinity: {CHECK_THREAD_AFFINITY}",
                f"timeout_seconds: {TIMEOUT_SECONDS}",
@@ -928,33 +961,42 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
             "Timeout": TIMEOUT_SECONDS,
             "Time budget (hours)": TIME_BUDGET_HOURS,
             "Baseline source": BASELINE_GIT_REF or "current checkout",
-            "TT diagnostics": "candidate only" if TT_DIAGNOSTICS else "disabled",
+            "TT diagnostics": ("both builds" if use_tt_counters("baseline") else
+                               "candidate only" if TT_DIAGNOSTICS else "disabled"),
             "Self-play smoke": (f"{SELFPLAY_GAMES} games at {SELFPLAY_TIME_CONTROL}; "
                                 f"Hash {SELFPLAY_HASH_MB} MiB, Threads {SELFPLAY_THREADS}"
                                 if SELFPLAY_ENABLED else "disabled"),
             "Self-play CLI": find_fastchess() if SELFPLAY_ENABLED else "disabled",
         }
+        if VICTIM_TEST:
+            settings["Full-bucket victim policy"] = "baseline depth-age, candidate depth-blind"
+            question = "Does choosing a victim by depth and age improve a two-entry TT?"
+            hypothesis = ("Depth-blind replacement may evict more deep entries, reduce immediate "
+                          "cutoffs and increase time to depth at 128 workers.")
+        elif TT_DIAGNOSTICS:
+            question = "How does bucket width affect TT replacements and useful hits as worker count increases?"
+            hypothesis = "Direct-mapped buckets may lose more reusable entries under parallel search."
+        else:
+            question = "How do changes in the current Weiss checkout affect time to depth, search work, moves and scores against the pinned source baseline?"
+            hypothesis = "The candidate may change runtime and search results; the direction and size of the effect are measured with matched baseline/candidate runs."
         write_experiment_md(
             output_dir,
             title="Weiss paired benchmark experiment",
-            question=("How does bucket width affect TT replacements and useful hits as worker count increases?"
-                      if TT_DIAGNOSTICS else "How do changes in the current Weiss checkout affect time to depth, search work, moves and scores against the pinned source baseline?"),
-            hypothesis=("Direct-mapped buckets may lose more reusable entries under parallel search."
-                        if TT_DIAGNOSTICS else "The candidate may change runtime and search results; the direction and size of the effect are measured with matched baseline/candidate runs."),
+            question=question, hypothesis=hypothesis,
             settings=settings,
             controls=[
-                "Each baseline/candidate pair uses identical depth, threads, TT settings, and the same ordered 50 positions.",
+                "Each pair uses the same depth, workers, TT capacity, bucket width and ordered 50 positions.",
                 "Each pair uses the baseline source specified above and the current checkout.",
                 f"Pair order is randomized with seed {ORDER_SEED}; searches run sequentially.",
                 *(["A short color-swapped self-play smoke check follows the benchmark."] if SELFPLAY_ENABLED else []),
-                "Physical binding pins candidate workers only; the pinned reference source does not contain this feature and remains unpinned.",
-                "CPU IDs come from the process's allowed cpuset and Linux physical-core topology; NUMA placement is otherwise unchanged.",
-                "Affinity verification runs as a separate untimed engine command and checks each worker's actual allowed CPU mask.",
+                *(["Physical binding pins candidate workers only. Core selection uses the Linux cpuset and topology.",
+                   "Worker affinity is checked separately before timing when enabled."]
+                  if physical_cpu_ids else ["Both builds inherit CPU placement."]),
             ],
             source_commit=source["commit"], source_status=source["status"],
             binaries=built_binaries, status=state,
             results=results or benchmark_results_text(output_dir),
-            conclusion=conclusion or "Compare paired rows in comparisons.csv. The short self-play smoke is a protocol check, not a strength estimate.",
+            conclusion=conclusion or "Compare completed paired rows in comparisons.csv.",
             limitations=[
                 "Parallel searches may visit different numbers of nodes and may not be deterministic.",
                 "Recorded means summarize completed runs only; incomplete configurations are not comparable as full repetitions.",
@@ -985,7 +1027,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                     binary = output_dir / "bin" / condition / f"weiss-b{bucket}-cap{cap}"
                     binary.parent.mkdir(parents=True, exist_ok=True)
                     command = build_command(bucket, binary, cap, source_roots[condition],
-                                            diagnostics=TT_DIAGNOSTICS and condition == "candidate")
+                                            condition=condition)
                     commands.write(shlex.join(command) + "\n")
                     commands.flush()
                     print(f"Building {condition}: bucket size {bucket}, cap_helpers={cap}", flush=True)
@@ -1044,7 +1086,7 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                 finished = utc_now()
                 process_wall_ns = time.monotonic_ns() - process_start
                 summary, rows = parse_result(raw, run, physical_cpu_ids)
-                if TT_DIAGNOSTICS and run["threads"] == 1:
+                if TT_DIAGNOSTICS and not VICTIM_TEST and run["threads"] == 1:
                     key = run["comparison_id"]
                     outcomes = [(r["bestmove"], r["raw_score"], r["nodes"]) for r in rows]
                     if key in single_worker_results:
@@ -1056,6 +1098,8 @@ def execute(plan, output_dir, deadline=None, physical_cpu_ids=None):
                         single_worker_results[key] = outcomes
                 summary["process_wall_ns"] = process_wall_ns
                 provenance = dict(binary_sha256=digest, raw_log=str(raw.relative_to(output_dir)))
+                if VICTIM_TEST:
+                    provenance["victim_policy"] = victim_policy(run["condition"])
                 positions.writerows({**run, **row, **provenance} for row in rows)
                 position_file.flush()
                 runs.writerow({**run, **summary, **provenance, "started_utc": started,
@@ -1264,6 +1308,8 @@ def main():
     if (type(TIME_BUDGET_HOURS) not in (int, float) or not math.isfinite(TIME_BUDGET_HOURS)
             or not 0 < TIME_BUDGET_HOURS <= 24):
         raise ValueError("TIME_BUDGET_HOURS must be positive and at most 24 hours")
+    if args.round_robin is not None and VICTIM_TEST:
+        parser.error("The victim-policy preset is a fixed-depth benchmark")
     if args.round_robin is not None:
         run_round_robin(args.round_robin, args.dry_run)
         return
@@ -1298,7 +1344,7 @@ def main():
             source_root = (f"<baseline-worktree:{BASELINE_GIT_REF}>"
                            if condition == "baseline" and BASELINE_GIT_REF else ROOT)
             print(shlex.join(build_command(bucket, binary, cap, source_root,
-                                           diagnostics=TT_DIAGNOSTICS and condition == "candidate")))
+                                           condition=condition)))
         if CHECK_THREAD_AFFINITY:
             for bucket, cap, threads in affinity_check_specs(plan):
                 binary = Path('<run-directory>') / 'bin' / 'candidate' / f'weiss-b{bucket}-cap{cap}'

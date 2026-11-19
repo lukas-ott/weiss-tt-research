@@ -211,9 +211,9 @@ void Benchmark(int argc, char **argv) {
 
     printf("BENCH_CONFIG depth=%d threads=%d hash_mb=%" PRIu64
            " bucket_size=%d entry_bytes=%zu bucket_bytes=%zu buckets=%" PRIu64
-           " cap_helpers=%d rotate_root_moves=%d cpu_binding=%s cpu_list=",
+           " victim_policy=%s cap_helpers=%d rotate_root_moves=%d cpu_binding=%s cpu_list=",
            Limits.depth, threadCount, TT.currentMB, BUCKET_SIZE,
-           sizeof(TTEntry), sizeof(TTBucket), TT.count, Limits.capHelpers,
+           sizeof(TTEntry), sizeof(TTBucket), TT.count, TT_VICTIM_POLICY, Limits.capHelpers,
            Limits.rotateRootMoves, ThreadBindingEnabled() ? "physical" : "none");
     if (ThreadBindingEnabled()) {
         for (int i = 0; i < threadCount; ++i)

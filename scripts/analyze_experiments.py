@@ -521,6 +521,8 @@ def tt_diagnostics(positions, groups):
                 ("first_tt_move_cutoff", "first_tt_move", "first_tt_move_cutoff_pct"),
                 ("changed_slots", "sampled_stores", "changed_slot_pct")]:
             data[label] = 100 * raw[numerator] / raw[denominator].where(raw[denominator] > 0)
+        deep_victims = raw["replaced_depth_8_15"] + raw["replaced_depth_16_plus"]
+        data["deep_replacements_per_1000_probes"] = 1000 * deep_victims / probes.where(probes > 0)
         data["mean_replaced_depth"] = raw["replaced_depth_sum"] / raw["store_replace"].where(raw["store_replace"] > 0)
         frames.append(pd.concat([data, raw], axis=1))
     return pd.concat(frames, ignore_index=True)
@@ -933,8 +935,17 @@ def main():
     tt_runs = tt_diagnostics(positions, CONFIG + ["run", "repetition"])
     if not tt_runs.empty:
         tables["tt_by_run"] = (tt_runs, "TT counts, occupancy and rates per repetition and worker role")
-        tables["tt_by_position"] = (tt_diagnostics(positions, CONFIG + ["position"]),
+        tt_positions = tt_diagnostics(positions, CONFIG + ["position"])
+        tables["tt_by_position"] = (tt_positions,
                                     "TT counts and rates for each position pooled across repetitions")
+        # The final histogram is shared by both roles. Give each FEN one vote
+        # after pooling its repeats, even if the last block was interrupted.
+        occupancy = tt_positions.loc[tt_positions.workers == "main"].groupby(CONFIG)["occupied_entries_pct"]
+        capacity = occupancy.agg(positions="size", mean_pct="mean", median_pct="median",
+                                 min_pct="min", max_pct="max",
+                                 positions_at_least_95_pct=lambda pct: (pct >= 95).sum(),
+                                 positions_below_50_pct=lambda pct: (pct < 50).sum()).reset_index()
+        tables["tt_capacity"] = (capacity, "End-of-search slot occupancy across positions (equal weight per FEN)")
     if not pairs.empty:
         tables["matched_runs"] = (pairs, "Matched repetitions and their measured differences")
         tables["matched_summary"] = (pair_summary, "Matched effects by configuration")
