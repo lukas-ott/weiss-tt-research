@@ -59,7 +59,7 @@ class TTDiagnosticsTests(unittest.TestCase):
                 env = {**os.environ, "WEISS_TT_VICTIM_TEST": mode, "WEISS_TT_DIAGNOSTICS": "0"}
                 result = subprocess.run([sys.executable, str(SCRIPT), "--dry-run"], env=env,
                                         capture_output=True, text=True, check=True)
-                self.assertIn("20 paired comparisons (40 benchmark runs)", result.stdout)
+                self.assertIn("30 paired comparisons (60 benchmark runs)", result.stdout)
                 self.assertNotIn("baseline-worktree", result.stdout)
                 builds = [line for line in result.stdout.splitlines() if line.startswith("make ")]
                 self.assertEqual(len(builds), 2)

@@ -252,8 +252,8 @@ WEISS_TT_VICTIM_TEST=timing python3 scripts/run_experiments.py --dry-run
 nohup sh -c 'WEISS_TT_VICTIM_TEST=timing python3 -u scripts/run_experiments.py && WEISS_TT_VICTIM_TEST=diagnostics python3 -u scripts/run_experiments.py' > tt-victim.out 2>&1 < /dev/null &
 ```
 
-Each batch uses 10 paired repetitions at depth 23, 64 MiB and 1/128 workers
-(40 suites per batch). Each has its own time budget. Use the timing batch for
+Each batch uses 10 paired repetitions at depth 23, 64 MiB and 1/2/128 workers
+(60 suites per batch). Each has its own time budget. Use the timing batch for
 elapsed time and the diagnostic batch for cutoff rates and depth ≥8 evictions per
 1,000 probes. The two policies can change the search even at one worker. For
 that worker count the same policy should reproduce its results across batches.

@@ -97,7 +97,7 @@ if VICTIM_TEST or TT_DIAGNOSTICS:
         TT_DIAGNOSTICS = VICTIM_TEST == "diagnostics"
         WEISS_DEFAULT.update(hash_mb=VICTIM_HASH_MIB[0], cap_helpers=0, rotate_root_moves=0, cpu_binding="none")
         EXTRA_RUNS = [{"name": f"hash-{size}-t{threads}", "hash_mb": size, "threads": threads}
-                      for size in VICTIM_HASH_MIB for threads in (1, 128)
+                      for size in VICTIM_HASH_MIB for threads in (1, 2, 128)
                       if (size, threads) != (VICTIM_HASH_MIB[0], 1)]
         EXPERIMENT_SLUG = f"tt-victim-policy-{VICTIM_TEST}-depth23"
     else:
